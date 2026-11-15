@@ -177,18 +177,23 @@ describe('subtitleFiles directory', () => {
         expect(fs.existsSync(dir)).toBe(true);
     });
 
-    it('each song folder has required files', () => {
-        const files = readAllSubtitleFiles();
-        for (const file of files) {
-            const songDir = path.join(process.cwd(), 'subtitleFiles', file.id);
-            expect(
-                fs.existsSync(path.join(songDir, 'config.txt')),
-                `config.txt missing for "${file.id}"`,
-            ).toBe(true);
-            expect(
-                fs.existsSync(path.join(songDir, 'subtitle.ass')),
-                `subtitle.ass missing for "${file.id}"`,
-            ).toBe(true);
+    it('each song folder has config.txt or an ASS/SSA subtitle', () => {
+        // 通用 ASS/SSA 支持后 config.txt 可选：目录里只要有 ASS/SSA 即可
+        const subtitleDir = path.join(process.cwd(), 'subtitleFiles');
+        const songFolders = fs
+            .readdirSync(subtitleDir, { withFileTypes: true })
+            .filter((dirent) => dirent.isDirectory())
+            .map((dirent) => dirent.name);
+
+        for (const songName of songFolders) {
+            const songDir = path.join(subtitleDir, songName);
+            const entries = fs.readdirSync(songDir);
+            const hasConfig = fs.existsSync(path.join(songDir, 'config.txt'));
+            const hasAss = entries.some((fileName) => /\.(ass|ssa)$/i.test(fileName));
+
+            expect(hasConfig || hasAss, `config.txt or ASS/SSA missing for "${songName}"`).toBe(
+                true,
+            );
         }
     });
 });
