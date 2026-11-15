@@ -33,6 +33,8 @@
     <li><a href="#api-端点">API 端点</a></li>
     <li><a href="#socketio-事件">Socket.io 事件</a></li>
     <li><a href="#键盘控制">键盘控制</a></li>
+    <li><a href="#lrc-自动生成字幕包">LRC 自动生成字幕包</a></li>
+    <li><a href="#通用-assssa-字幕支持">通用 ASS/SSA 字幕支持</a></li>
     <li><a href="#字幕文件格式">字幕文件格式</a></li>
     <li><a href="#字幕制作工作流">字幕制作工作流</a></li>
     <li><a href="#许可证">许可证</a></li>
@@ -66,8 +68,14 @@
 
 - 基于 JSON 配置的预设条件筛选
 - 实时搜索过滤
-- 艺人专属颜色方案
-- 字幕颜色开关
+- 字体下拉：自动读取 `public/fonts` 中 TTF/OTF/TTC 的字体族名，全局生效（切换歌曲后仍保持）
+- 颜色直接跟随 ASS 文件本身：展示端按 ASS 样式渲染，控制端不做颜色改写
+
+### 字幕来源
+
+- 预制时间轴：读取 `subtitleFiles/<歌曲名>/` 目录，无需数据库或上传
+- 通用 ASS/SSA：任意 ASS/SSA 字幕直接放入即可使用；没有 `config.txt` 时自动从 `[Events]` 解析时间轴
+- LRC 生成器：`pnpm lrc2subtitle` 从 LRC 歌词一步生成可直接导入的字幕包；自动识别中/日/英语言，单文件内的双语对照会自动配对成原文 + 翻译
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
@@ -100,16 +108,22 @@ liveSubtitle_new/
 │   │   ├── subtitles/[id].get.ts    # GET /api/subtitles/:id
 │   │   ├── filter-config.get.ts     # GET /api/filter-config
 │   │   ├── fonts.get.ts             # GET /api/fonts
+│   │   ├── font-options.get.ts      # GET /api/font-options（字体族名）
 │   │   └── health.get.ts            # GET /api/health
 │   ├── plugins/
 │   │   └── socket.ts        # Socket.io 事件 relay（Nitro plugin）
 │   └── utils/
+│       ├── ass.ts           # 通用 ASS/SSA 解析器（时间轴回退）
+│       ├── fonts.ts         # 字体元数据解析（字体族名）
 │       └── subtitle.ts      # 字幕数据读取工具
 ├── types/                   # TypeScript 类型定义
 │   └── subtitle.ts
 ├── utils/                   # 客户端工具
 │   ├── api.ts               # API 请求函数
-│   └── fontLoader.ts        # 字体动态加载
+│   ├── assColor.ts          # 通用 ASS 颜色处理工具（运行时不改写颜色）
+│   ├── assFont.ts           # ASS 字体处理（字体下拉）
+│   ├── fontLoader.ts        # 字体动态加载
+│   └── keyboard.ts          # 键盘快捷键判断
 ├── public/                  # 静态资源
 │   ├── js/                  # JavascriptSubtitlesOctopus WASM
 │   └── fonts/               # 字体文件
@@ -118,9 +132,12 @@ liveSubtitle_new/
 ├── shims/
 │   └── debug.mjs            # debug 模块 ESM shim
 ├── test/
-│   └── server/
-│       └── subtitle.test.ts # 服务端单元测试
+│   ├── client/              # 客户端工具与组件测试
+│   ├── integration/         # LRC → 字幕包 → 服务端集成测试
+│   ├── scripts/             # 生成器脚本测试
+│   └── server/              # 服务端单元测试
 ├── scripts/                 # 工具脚本
+│   ├── lrc2subtitle.js      # LRC → 可直接导入的字幕包（Node CLI）
 │   ├── lyrics2ass.js        # 歌词 → ASS 转换
 │   ├── generateConfig.js    # 配置生成
 │   └── llwiki.js            # Wiki 数据抓取
@@ -200,19 +217,90 @@ pnpm lint
 - 上方时间轴：查看播放进度
 - 下方字幕选择器：搜索/筛选/选择字幕文件
 - 选择文件后自动开始播放
+- 字幕颜色：直接跟随 ASS 文件中的样式颜色（控制端不再改色）
+- 字体下拉：从 `public/fonts` 自动列出字体，**全局生效**（切换歌曲后仍保持）；切换后焦点会自动离开下拉框，空格键仍用于播放/暂停
+- 字幕来源：把字幕目录（含任意 ASS/SSA 或 `config.txt`）放入 `subtitleFiles/` 后刷新页面即可，详见 [字幕文件格式](#字幕文件格式)
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
 ## 键盘控制
 
-| 按键 | 功能                                     |
-| ---- | ---------------------------------------- |
-| `←`  | 轨道 1：隐藏当前字幕，回到开始时间，暂停 |
-| `↓`  | 轨道 1：播放下一条字幕，自动播放         |
-| `↑`  | 轨道 1：播放上一条字幕，自动播放         |
-| `A`  | 轨道 2：隐藏当前字幕，回到开始时间，暂停 |
-| `S`  | 轨道 2：播放下一条字幕，自动播放         |
-| `W`  | 轨道 2：播放上一条字幕，自动播放         |
+| 按键   | 功能                                     |
+| ------ | ---------------------------------------- |
+| `←`    | 轨道 1：隐藏当前字幕，回到开始时间，暂停 |
+| `↓`    | 轨道 1：播放下一条字幕，自动播放         |
+| `↑`    | 轨道 1：播放上一条字幕，自动播放         |
+| `A`    | 轨道 2：隐藏当前字幕，回到开始时间，暂停 |
+| `S`    | 轨道 2：播放下一条字幕，自动播放         |
+| `W`    | 轨道 2：播放上一条字幕，自动播放         |
+| `空格` | 播放 / 暂停切换（暂停后再按继续播放）    |
+
+<p align="right">(<a href="#readme-top">回到顶端</a>)</p>
+
+## LRC 自动生成字幕包
+
+如果已有 `.lrc` 歌词文件，可用 `scripts/lrc2subtitle.js` 自动生成可直接导入项目的字幕目录，省去手工打轴：
+
+```bash
+# 单语：自动识别语言（中/日/英），生成 subtitleFiles/<歌曲名>/{config.txt,subtitle.ass}
+pnpm lrc2subtitle song.lrc
+
+# 单文件双语（如中英对照）：自动识别并配对原文/翻译，无需 --translation
+pnpm lrc2subtitle "Payphone - Maroon 5,Wiz Khalifa.lrc"
+
+# 双语：另附翻译 LRC，并把歌曲直接加入筛选器
+pnpm lrc2subtitle song.lrc --translation song.zh.lrc --name "始まりは君の空" --filter "始まりは君の空" --filter-type album
+
+# 纯中文歌曲：也可显式指定 --lang zh
+pnpm lrc2subtitle chinese.lrc --lang zh
+```
+
+生成结果（默认输出到 `subtitleFiles/`）：
+
+```
+subtitleFiles/
+├── filter-config.json        # 使用 --filter 时追加/更新
+└── 始まりは君の空/
+    ├── config.txt            # 时间轴：轨道,开始时间,结束时间,文本（原文）
+    ├── subtitle.ass          # ASS 初稿（中文 pos(960,1020)，日文/英文 pos(960,1075)）
+    └── lyrics.txt            # 有翻译时生成（--translation 或单文件自动配对）
+```
+
+生成后无需其它导入步骤，刷新控制端页面即可在字幕列表中选择。脚本生成的是**初稿**：逐词分词、注音（`日文-f-*`）与演唱者样式仍需在 Aegisub 中按 [字幕制作工作流](#字幕制作工作流) 精修。
+
+### 参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `--name <名称>` | 歌曲名（同时作为输出目录名），默认取 `[ti:]` 或文件名 |
+| `--out <目录>` | 输出根目录，默认 `subtitleFiles` |
+| `--track <1\|2>` | 写入 `config.txt` 的轨道编号，默认 `1` |
+| `--offset-ms <毫秒>` | 时间偏移（正数延后），叠加在 LRC 的 `[offset:]` 上，同时应用于翻译文件 |
+| `--lang <auto\|ja\|zh\|en>` | 原文语言，默认 `auto`（按内容自动识别） |
+| `--translation <文件>` | 翻译 LRC 文件；提供后生成双语 `subtitle.ass` 与 `lyrics.txt` |
+| `--translation-lang <auto\|语言>` | 翻译语言，默认 `auto`（自动识别翻译文件） |
+| `--no-auto-pair` | 关闭单文件内的双语自动识别与配对 |
+| `--keep-credits` | 保留 LRC 开头的作词/作曲等制作信息行（默认过滤） |
+| `--color <#RRGGBB>` | ASS 描边颜色，默认 `#A5469C`（Liella 紫） |
+| `--font-ja <字体>` | 日文字体，默认 `Tsukushi A Round Gothic` |
+| `--font-zh <字体>` | 中文字体，默认 `FZFW ZhuZi A YuanS` |
+| `--filter <名称>` | 把歌曲追加到 `<out>/filter-config.json` 的指定筛选器 |
+| `--filter-type <类型>` | 筛选器类型 `album` / `unit` / `live` / `solo`，默认 `album` |
+| `--force` | 输出目录已存在时覆盖生成的文件（不删除目录内其它文件） |
+| `--dry-run` | 只打印将生成的文件，不写入磁盘 |
+| `--help` | 显示完整帮助 |
+
+补充说明：
+
+- 支持标准 LRC（`[mm:ss.xx]`、一行多个时间戳）、增强型 LRC 词时间戳与 `[ti:]` `[ar:]` `[al:]` `[by:]` `[offset:]` `[length:]` 元数据。
+- **语言自动识别**：不传 `--lang` 时按内容识别原文语言（有假名→日文、有汉字→中文、只有拉丁字母→英文），可用 `--lang` 显式覆盖。
+- **单文件双语自动配对**：一个 LRC 内同一时间戳下有两行（如中文 + 英文）时，会自动识别语言并配对成「原文 + 翻译」，无需再提供翻译文件；配对要求时间戳完全一致，且需要足够多的双行组（≥3 组、占全部时间戳组 ≥50%、语言混合占比 ≥80%），避免把单语和声/合唱误判为双语。显式 `--translation` 优先；`--no-auto-pair` 可关闭。
+- **双语布局**：中文译文在上（`\pos(960,1020)`），英文/日文在下（`\pos(960,1075)`）；同一块两行语言相同时自动换到另一个位置，避免文字重叠。
+- **制作信息过滤**：默认过滤行首为作词/作曲/编曲/Lyrics/Composer 等 `标签: 内容` 的 credits 行，并去除同一时间戳的重复行；`--keep-credits` 可保留。
+- 纯中文/纯日文/纯英文单语歌曲会自动识别语言，只生成该语言的样式与字幕行；单语字幕默认沿用该语言在双语布局中的竖直位置，如需居中可在生成后调整 ASS 中的 `\pos`。
+- 显式翻译文件按开始时间戳配对（容差 100ms）；两份 LRC 时间轴偏差较大时可先用 `--offset-ms` 对齐。
+- 每行结束时间 = 下一行开始时间，最后一行 = 开始时间 + 5 秒；`[length:]` 用于检查是否超出歌曲时长。
+- `--lang en` 的样式固定使用 Arial 字体；更多参数详见 `node scripts/lrc2subtitle.js --help`。
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
@@ -227,18 +315,20 @@ pnpm lint
 | `GET /api/subtitle-file/:id` | 获取原始 ASS 字幕文件内容 |
 | `GET /api/filter-config`     | 获取过滤器配置            |
 | `GET /api/fonts`             | 获取字体文件列表          |
+| `GET /api/font-options`      | 获取字体选项（字体族名）  |
 | `GET /api/health`            | 健康检查                  |
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
 ## Socket.io 事件
 
-| 事件名               | 方向            | 说明                     |
-| -------------------- | --------------- | ------------------------ |
-| `play-state-change`  | 控制端 → 展示端 | 播放/暂停状态切换        |
-| `time-sync`          | 控制端 → 展示端 | 时间同步（跳转、暂停）   |
-| `file-selected`      | 控制端 → 展示端 | 字幕文件选择             |
-| `ass-content-update` | 控制端 → 展示端 | ASS 内容更新（颜色切换） |
+| 事件名               | 方向            | 说明                                 |
+| -------------------- | --------------- | ------------------------------------ |
+| `play-state-change`  | 控制端 → 展示端 | 播放/暂停状态切换                    |
+| `time-sync`          | 控制端 → 展示端 | 时间同步（跳转、暂停）               |
+| `file-selected`      | 控制端 → 展示端 | 字幕文件选择（附带当前全局字体）     |
+| `ass-content-update` | 控制端 → 展示端 | ASS 内容更新（选文件时下发原始 ASS） |
+| `font-change`        | 控制端 → 展示端 | 字体全局切换，展示端应用到所有字幕   |
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
@@ -250,10 +340,24 @@ pnpm lint
 subtitleFiles/
 ├── filter-config.json      # 过滤器配置
 └── 歌曲名/                 # 每个歌曲一个文件夹
-    ├── config.txt          # 字幕时间轴配置
-    ├── subtitle.ass        # ASS 字幕文件
-    └── lyrics.txt          # 原歌词文件
+    ├── config.txt          # 时间轴配置（可选：缺省时自动从 ASS/SSA 的 [Events] 解析）
+    ├── subtitle.ass        # ASS/SSA 字幕文件（文件名任意，见下方通用支持）
+    └── lyrics.txt          # 原歌词文件（可选，不参与运行）
 ```
+
+目录内的字幕文件按 `subtitle.ass` → 其它 `*.ass` → `*.ssa` 的顺序查找使用；`config.txt` 能解析出时间轴时优先使用它，否则回退到 ASS/SSA。
+
+### 通用 ASS/SSA 字幕支持
+
+本项目的展示端本身使用 libass 渲染，支持 SSA/ASS 的全部表现形式；控制端的预制时间轴也可以直接从任意字幕文件解析，**不需要 `config.txt`**：
+
+- 支持 ASS v4.00+ 与 SSA v4；`[Events]` / `[V4+ Styles]` / `[V4 Styles]` 的 `Format` 字段顺序任意，均按字段名解析。
+- 字幕文件名任意（优先 `subtitle.ass`，其次其它 `*.ass`、`*.ssa`），放入 `subtitleFiles/<歌曲名>/` 后刷新控制端即可。
+- 文件编码支持 UTF-8（含 BOM）、UTF-16LE、UTF-16BE，非 UTF-8 时回退 GB18030/GBK。
+- 时间轴取所有 `Dialogue:` 行（忽略 `Comment:`），去掉 `{...}` 特效标签、把 `\N` / `\n` / `\h` 转为空格；`Layer`（或 SSA 的 `Marked`）大于 0 的事件进入轨道 2。
+- 颜色完全由 ASS 文件中的样式决定（渲染端直接使用 ASS 颜色，控制端不做颜色替换）。
+
+> 只有 ASS 而没有 `config.txt` 时，时间轴会包含字幕文件中的每一行（包括双语字幕的两行原文/译文）；需要更干净的轨道与预览文本时，仍建议提供 `config.txt`。
 
 ### lyrics.txt 格式
 
@@ -333,7 +437,15 @@ ASS 字幕样式命名规范：
 
 字体放置在 `public/fonts/` 目录，支持：`.ttf` `.otf` `.ttc` `.woff` `.woff2`
 
+控制端的「字体」下拉会自动读取其中 `.ttf` / `.otf` / `.ttc` 文件的字体族名（解析字体 `name` 表，TTC 取第一个字体），无需额外配置；新增字体文件后刷新控制端即可选择。字体设置对展示端**全局生效**：切换字体后立即应用到当前字幕，切换歌曲也会保持；只改字体，不改颜色。
+
+切换字体/筛选等设置后控制端会自动移走焦点，避免空格键被下拉框吃掉——之后直接按空格仍然是播放/暂停。
+
+展示端加载字体会先逐个校验文件是否可访问：无法访问的字体自动跳过，避免个别字体缺失导致整个字幕渲染器报错、画面空白；字体列表接口已禁用缓存。若 OBS 浏览器来源仍在使用旧页面或旧字体列表，请在来源属性中点击「刷新当前页面的缓存」后重试。
+
 ### 颜色
+
+颜色在 ASS 字幕文件本身的样式中定义（`OutlineColour` / `TertiaryColour` 等），展示端直接按 ASS 渲染，控制端不做颜色替换。制作 ASS 时常用配色如下：
 
 - #A5469C Liella
 - #FF7F27 Kanon
@@ -376,6 +488,8 @@ ASS 字幕样式命名规范：
 ### 5. 生成配置文件
 
 将 `scripts/generateConfig.js` 于浏览器控制台执行，在 `const ass = ``.split('\n');` 的反引号中粘贴 `subtitle.ass` 中所有 `Dialogue:` 开头的行，生成 `config.txt` 内容。在歌曲文件夹中创建 `config.txt`，视情况调整轨道编号。
+
+> 若已有 LRC 歌词，可用 [LRC 自动生成字幕包](#lrc-自动生成字幕包) 代替第 1、2、5 步：一次生成 ASS 初稿与 `config.txt` 时间轴，再按第 3、4 步做分词和精修；也可以只用 ASS 文件（不提供 `config.txt`），由服务端自动解析时间轴。
 
 ### 6. 添加筛选器
 
