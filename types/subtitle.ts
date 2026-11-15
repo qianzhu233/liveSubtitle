@@ -41,3 +41,10 @@ export interface Filter {
 
 // 筛选配置类型
 export type FilterConfig = Filter[];
+
+// 字体选项类型（由服务端解析 public/fonts 得到）
+export interface FontOption {
+    fileName: string;
+    familyName: string;
+    url: string;
+}
