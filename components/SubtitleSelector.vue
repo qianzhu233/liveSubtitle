@@ -29,37 +29,20 @@
             </div>
 
             <div class="subtitle-color-toggle">
-                <label class="toggle-label">分词:</label>
-                <button
-                    @click="store.toggleSubtitleColor"
-                    class="toggle-btn"
-                    :class="{
-                        enabled: store.subtitleColorEnabled,
-                        disabled: !store.subtitleColorEnabled,
-                    }"
-                >
-                    {{ store.subtitleColorEnabled ? '开启' : '关闭' }}
-                </button>
+                <label class="toggle-label">色彩:</label>
+                <span class="color-follow-hint">跟随 ASS 本身</span>
             </div>
 
-            <div class="color-selector">
-                <label class="color-label">默认颜色:</label>
-                <div
-                    class="color-preview"
-                    :style="{
-                        backgroundColor:
-                            store.colorPresets[
-                                store.selectedColor as keyof typeof store.colorPresets
-                            ],
-                    }"
-                ></div>
-                <select
-                    v-model="store.selectedColor"
-                    @change="handleColorChange"
-                    class="color-select"
-                >
-                    <option v-for="(_color, name) in store.colorPresets" :key="name" :value="name">
-                        {{ name }}
+            <div class="font-selector">
+                <label class="font-label">字体:</label>
+                <select v-model="store.selectedFont" @change="handleFontChange" class="font-select">
+                    <option value="">默认（原样式）</option>
+                    <option
+                        v-for="font in store.fontOptions"
+                        :key="font.fileName"
+                        :value="font.familyName"
+                    >
+                        {{ getFontOptionLabel(font) }}
                     </option>
                 </select>
             </div>
@@ -123,7 +106,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useSubtitleStore } from '~/stores/subtitle';
-import type { SubtitleFile } from '~/types/subtitle';
+import type { FontOption, SubtitleFile } from '~/types/subtitle';
 
 const store = useSubtitleStore();
 
@@ -182,14 +165,29 @@ const selectPreset = (preset: string) => {
     currentPreset.value = preset;
 };
 
-const handleFilterTypeChange = () => {
-    currentPreset.value = 'all';
+// 切换设置后主动移走焦点：否则空格键会激活下拉框/按钮，而不是暂停字幕
+const blurActiveControl = () => {
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) {
+        activeElement.blur();
+    }
 };
 
-const handleColorChange = async () => {
-    if (store.selectedFile && !store.subtitleColorEnabled) {
-        await store.broadcastColorChange();
-    }
+const handleFilterTypeChange = () => {
+    currentPreset.value = 'all';
+    blurActiveControl();
+};
+
+const handleFontChange = () => {
+    store.broadcastFontChange();
+    blurActiveControl();
+};
+
+const getFontOptionLabel = (font: FontOption): string => {
+    const duplicateCount = store.fontOptions.filter(
+        (option) => option.familyName === font.familyName,
+    ).length;
+    return duplicateCount > 1 ? `${font.familyName}（${font.fileName}）` : font.familyName;
 };
 
 const getPreviewText = (file: SubtitleFile): string => {
@@ -199,7 +197,7 @@ const getPreviewText = (file: SubtitleFile): string => {
 };
 
 onMounted(async () => {
-    await store.loadSubtitleFiles();
+    await Promise.all([store.loadSubtitleFiles(), store.loadFontOptions()]);
 });
 </script>
 
@@ -277,26 +275,29 @@ onMounted(async () => {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
     margin-bottom: 8px;
     flex-shrink: 0;
 }
 
-.color-selector {
+.font-selector {
     display: flex;
     align-items: center;
     gap: 6px;
     margin-bottom: 8px;
 }
 
-.color-label {
+.font-label {
     font-size: 12px;
     color: #374151;
     font-weight: 500;
     white-space: nowrap;
 }
 
-.color-select {
+.font-select {
     height: 24.5px;
+    max-width: 220px;
     padding: 3px 6px;
     border: 1px solid #d1d5db;
     border-radius: 4px;
@@ -304,19 +305,11 @@ onMounted(async () => {
     outline: none;
     background-color: white;
     cursor: pointer;
-    min-width: 80px;
+    text-overflow: ellipsis;
 }
 
-.color-select:focus {
+.font-select:focus {
     border-color: #3b82f6;
-}
-
-.color-preview {
-    width: 16px;
-    height: 16px;
-    border-radius: 2px;
-    border: 1px solid #d1d5db;
-    flex-shrink: 0;
 }
 
 .subtitle-color-toggle {
@@ -333,30 +326,9 @@ onMounted(async () => {
     white-space: nowrap;
 }
 
-.toggle-btn {
-    padding: 3px 6px;
-    border: 1px solid #d1d5db;
-    border-radius: 4px;
+.color-follow-hint {
     font-size: 12px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    min-width: 40px;
-}
-
-.toggle-btn.enabled {
-    background-color: #10b981;
-    color: white;
-    border-color: #10b981;
-}
-
-.toggle-btn.disabled {
-    background-color: #6b7280;
-    color: white;
-    border-color: #6b7280;
-}
-
-.toggle-btn:hover {
-    opacity: 0.8;
+    color: #6b7280;
 }
 
 .preset-filters {

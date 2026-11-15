@@ -9,6 +9,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import type { SubtitleFile } from '~/types/subtitle';
+import { applyAssFont } from '~/utils/assFont';
 import { loadFonts } from '~/utils/fontLoader';
 
 const canvas = ref<HTMLCanvasElement>();
@@ -16,11 +17,19 @@ const currentTime = ref(0);
 const isPlaying = ref(false);
 const selectedFile = ref<SubtitleFile | null>(null);
 
+// 字体为展示端的全局设置：切换歌曲、更新 ASS 内容时都统一应用
+const fontFamily = ref('');
+let currentAssContent = '';
+let rendererRequestId = 0;
+
 // auto-imported by @xarenas107/nuxt-socket-io
 const socket: any = useSocketIO();
 
 let subtitleRenderer: any = null;
 let internalTimer: number | null = null;
+
+const applyCurrentFont = (assContent: string): string =>
+    fontFamily.value ? applyAssFont(assContent, fontFamily.value) : assContent;
 
 const initSocketListeners = () => {
     socket.on('connect', () => {
@@ -50,23 +59,29 @@ const initSocketListeners = () => {
 
     socket.on('ass-content-update', (data: any) => {
         console.log('收到ASS文件更新:', data);
-        if (data.assContent) {
-            const wasPlaying = isPlaying.value;
-            const currentTimeBeforeUpdate = currentTime.value;
+        if (!data.assContent) return;
 
-            initSubtitleRenderers(data.assContent).then(() => {
-                if (wasPlaying) {
-                    currentTime.value = currentTimeBeforeUpdate;
-                    updateSubtitles();
-                    startInternalTimer();
-                }
-            });
-        }
+        currentAssContent = data.assContent;
+        reinitWithCurrentContent();
+    });
+
+    socket.on('font-change', (data: any) => {
+        console.log('收到字体变化:', data);
+        fontFamily.value = String(data?.fontFamily ?? '');
+        reinitWithCurrentContent();
     });
 
     socket.on('file-selected', (data: any) => {
         console.log('收到文件选择:', data);
+        // 切换字幕时先停掉旧字幕的计时器，避免旧时间线残留（之后由控制端的播放状态/时间同步驱动）
+        stopInternalTimer();
+        isPlaying.value = false;
+        currentTime.value = 0;
         selectedFile.value = data.file;
+        // 字体设置随文件选择一起同步，保证切换歌曲后字体仍然全局生效
+        if (typeof data.fontFamily === 'string') {
+            fontFamily.value = data.fontFamily;
+        }
         loadSubtitleFile(data.file);
     });
 
@@ -92,8 +107,9 @@ const loadSubtitleFile = async (file: SubtitleFile) => {
         }
 
         const assContent = await response.text();
+        currentAssContent = assContent;
 
-        await initSubtitleRenderers(assContent);
+        await initSubtitleRenderers(applyCurrentFont(assContent));
 
         currentTime.value = 0;
         updateSubtitles();
@@ -105,10 +121,13 @@ const loadSubtitleFile = async (file: SubtitleFile) => {
 const initSubtitleRenderers = async (assContent: string): Promise<void> => {
     if (!canvas.value) return;
 
+    // 递增请求序号：并发重建时只保留最后一次的渲染结果，避免旧内容覆盖新字体/新 ASS
+    const requestId = ++rendererRequestId;
     console.log('初始化字幕渲染器');
 
     if (subtitleRenderer) {
         subtitleRenderer.dispose();
+        subtitleRenderer = null;
     }
 
     return new Promise((resolve, reject) => {
@@ -120,6 +139,12 @@ const initSubtitleRenderers = async (assContent: string): Promise<void> => {
 
             loadFonts()
                 .then((fonts) => {
+                    if (requestId !== rendererRequestId) {
+                        // 已有更新的渲染请求，丢弃本次过期结果
+                        resolve();
+                        return;
+                    }
+
                     subtitleRenderer = new (window as any).SubtitlesOctopus({
                         canvas: canvas.value,
                         subContent: assContent,
@@ -144,6 +169,25 @@ const initSubtitleRenderers = async (assContent: string): Promise<void> => {
         } catch (error) {
             console.error('初始化字幕渲染器失败:', error);
             reject(error);
+        }
+    });
+};
+
+// 用当前 ASS + 全局字体重建渲染器，并保留当前时间与播放状态
+const reinitWithCurrentContent = () => {
+    if (!currentAssContent) return;
+
+    const wasPlaying = isPlaying.value;
+    const currentTimeBeforeUpdate = currentTime.value;
+
+    initSubtitleRenderers(applyCurrentFont(currentAssContent)).then(() => {
+        // 重建渲染器后必须恢复当前时间：
+        // 否则暂停状态下切换字体时画面会停在 0 秒，导致字幕“消失”
+        currentTime.value = currentTimeBeforeUpdate;
+        updateSubtitles();
+
+        if (wasPlaying) {
+            startInternalTimer();
         }
     });
 };

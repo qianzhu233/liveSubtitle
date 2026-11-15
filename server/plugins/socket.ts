@@ -26,6 +26,11 @@ export default defineNitroPlugin((nitro) => {
                 socket.broadcast.emit('ass-content-update', data);
             });
 
+            socket.on('font-change', (data: any) => {
+                console.log('[socket.io] 收到字体变化:', data);
+                socket.broadcast.emit('font-change', data);
+            });
+
             socket.on('disconnect', () => {
                 console.log('[socket.io] 客户端已断开:', socket.id);
             });

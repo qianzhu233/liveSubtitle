@@ -1,4 +1,4 @@
-import type { SubtitleFile, FilterConfig } from '~/types/subtitle';
+import type { SubtitleFile, FilterConfig, FontOption } from '~/types/subtitle';
 
 export async function fetchSubtitleFiles(): Promise<SubtitleFile[]> {
     try {
@@ -41,6 +41,20 @@ export async function fetchFilterConfig(): Promise<FilterConfig> {
         return data;
     } catch (error) {
         console.error('获取过滤器配置失败:', error);
+        return [];
+    }
+}
+
+export async function fetchFontOptions(): Promise<FontOption[]> {
+    try {
+        const response = await fetch('/api/font-options');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data;
+    } catch (error) {
+        console.error('获取字体选项失败:', error);
         return [];
     }
 }

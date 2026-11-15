@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { SubtitleFile, FilterOptions, FilterConfig } from '~/types/subtitle';
-import { fetchSubtitleFiles, fetchFilterConfig } from '~/utils/api';
+import type { SubtitleFile, FilterOptions, FilterConfig, FontOption } from '~/types/subtitle';
+import { fetchSubtitleFiles, fetchFilterConfig, fetchFontOptions } from '~/utils/api';
 
 export const useSubtitleStore = defineStore('subtitle', () => {
     // 状态
@@ -10,31 +10,13 @@ export const useSubtitleStore = defineStore('subtitle', () => {
     const selectedFile = ref<SubtitleFile | null>(null);
     const isPlaying = ref(false);
     const currentTime = ref(0);
-    const subtitleColorEnabled = ref(true);
-    const selectedColor = ref('Liella');
+    const fontOptions = ref<FontOption[]>([]);
+    // 空字符串 = 默认（原样式）
+    const selectedFont = ref('');
     const filterOptions = ref<FilterOptions>({
         searchText: '',
     });
     const filterConfig = ref<FilterConfig>([]);
-
-    // 预设颜色配置
-    const colorPresets = {
-        Liella: '#A5469C',
-        涩谷香音: '#FF7F27',
-        唐可可: '#43D1D9',
-        岚千砂都: '#FF6E90',
-        平安名堇: '#4B9C40',
-        叶月恋: '#0000A0',
-        樱小路希奈子: '#ABA229',
-        米女芽衣: '#FF3535',
-        若菜四季: '#7FB0A6',
-        鬼冢夏美: '#FF51C4',
-        '薇恩·玛格丽特': '#D895F0',
-        鬼冢冬毬: '#27A7AE',
-        'Sunny Passion': '#FF683D',
-        柊摩央: '#9A1B5A',
-        圣泽悠奈: '#B4AA2B',
-    };
 
     // socket.io - auto-imported by @xarenas107/nuxt-socket-io
     const socket: any = useSocketIOStore();
@@ -67,7 +49,6 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         selectedFile.value = file;
         currentTime.value = 0;
         isPlaying.value = false;
-        subtitleColorEnabled.value = true;
         broadcastFileSelect(file);
     };
 
@@ -100,86 +81,6 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const modifyAssColor = (assContent: string): string => {
-        const lines = assContent.split('\n');
-
-        const selectedColorHex = colorPresets[selectedColor.value as keyof typeof colorPresets];
-        if (!selectedColorHex) {
-            console.error('未找到选中的颜色:', selectedColor.value);
-            return assContent;
-        }
-
-        const colorHex = selectedColorHex.replace('#', '');
-        const group1 = colorHex.substring(0, 2);
-        const group2 = colorHex.substring(2, 4);
-        const group3 = colorHex.substring(4, 6);
-
-        const assColor = `&H00${group3}${group2}${group1}`;
-
-        let startIndex = -1;
-
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i]!.trim();
-            if (line === '[V4+ Styles]') {
-                for (let j = i + 1; j < lines.length; j++) {
-                    const formatLine = lines[j]!.trim();
-                    if (formatLine.startsWith('Format:')) {
-                        startIndex = j + 1;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
-
-        if (startIndex === -1) {
-            console.error('未找到[V4+ Styles]部分或Format行');
-            return assContent;
-        }
-
-        for (let i = startIndex; i < lines.length; i++) {
-            const line = lines[i]!.trim();
-            if (line === '') {
-                break;
-            }
-
-            const parts = line.split(',');
-            if (parts.length >= 6) {
-                parts[5] = assColor;
-                lines[i] = parts.join(',');
-            }
-        }
-
-        return lines.join('\n');
-    };
-
-    const toggleSubtitleColor = async () => {
-        subtitleColorEnabled.value = !subtitleColorEnabled.value;
-
-        if (selectedFile.value) {
-            try {
-                const response = await fetch(`/api/subtitle-file/${selectedFile.value.id}`);
-                if (!response.ok) {
-                    console.error('获取字幕文件失败:', response.status);
-                    return;
-                }
-
-                const originalAssContent = await response.text();
-                let modifiedAssContent = originalAssContent;
-
-                if (!subtitleColorEnabled.value) {
-                    modifiedAssContent = modifyAssColor(originalAssContent);
-                }
-
-                socket.emit('ass-content-update', {
-                    assContent: modifiedAssContent,
-                });
-            } catch (error) {
-                console.error('切换字幕颜色失败:', error);
-            }
-        }
-    };
-
     const broadcastPlayStateChange = () => {
         socket.emit('play-state-change', { isPlaying: isPlaying.value });
     };
@@ -189,20 +90,18 @@ export const useSubtitleStore = defineStore('subtitle', () => {
     };
 
     const broadcastFileSelect = (file: SubtitleFile) => {
-        socket.emit('file-selected', { file });
+        // 字体是展示端的全局设置，随文件选择一起下发，保证切换歌曲后仍然生效
+        socket.emit('file-selected', { file, fontFamily: selectedFont.value });
 
         setTimeout(async () => {
             try {
                 const response = await fetch(`/api/subtitle-file/${file.id}`);
                 if (response.ok) {
                     const originalAssContent = await response.text();
-                    let assContent = originalAssContent;
-
-                    if (!subtitleColorEnabled.value) {
-                        assContent = modifyAssColor(originalAssContent);
-                    }
-
-                    socket.emit('ass-content-update', { assContent });
+                    // 颜色跟随 ASS 本身：这里始终发送原始 ASS，字体由展示端统一应用
+                    socket.emit('ass-content-update', {
+                        assContent: originalAssContent,
+                    });
                 }
             } catch (error) {
                 console.error('文件选择后发送ASS文件失败:', error);
@@ -210,19 +109,9 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         }, 100);
     };
 
-    const broadcastColorChange = async () => {
-        if (selectedFile.value && !subtitleColorEnabled.value) {
-            try {
-                const response = await fetch(`/api/subtitle-file/${selectedFile.value.id}`);
-                if (response.ok) {
-                    const originalAssContent = await response.text();
-                    const assContent = modifyAssColor(originalAssContent);
-                    socket.emit('ass-content-update', { assContent });
-                }
-            } catch (error) {
-                console.error('颜色变化后发送ASS文件失败:', error);
-            }
-        }
+    // 字体设置对全局生效：单独通知展示端，由展示端应用到所有字幕内容上
+    const broadcastFontChange = () => {
+        socket.emit('font-change', { fontFamily: selectedFont.value });
     };
 
     const loadSubtitleFiles = async () => {
@@ -238,14 +127,22 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         }
     };
 
+    const loadFontOptions = async () => {
+        try {
+            fontOptions.value = await fetchFontOptions();
+        } catch (error) {
+            console.error('加载字体选项失败:', error);
+            fontOptions.value = [];
+        }
+    };
+
     return {
         subtitleFiles,
         selectedFile,
         isPlaying,
         currentTime,
-        subtitleColorEnabled,
-        selectedColor,
-        colorPresets,
+        fontOptions,
+        selectedFont,
         filterOptions,
         filterConfig,
         isLoading,
@@ -259,11 +156,10 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         setCurrentTime,
         updateFilter,
         formatTime,
-        toggleSubtitleColor,
-        modifyAssColor,
         loadSubtitleFiles,
+        loadFontOptions,
         broadcastPlayStateChange,
         broadcastTimeSync,
-        broadcastColorChange,
+        broadcastFontChange,
     };
 });
