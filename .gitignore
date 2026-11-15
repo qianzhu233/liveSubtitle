@@ -6,6 +6,8 @@ node_modules
 .nuxt
 .nitro
 .cache
+dist
+*.tsbuildinfo
 # Logs
 logs
 *.log
