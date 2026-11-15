@@ -12,6 +12,13 @@ export default defineNuxtConfig({
 
     modules: ['@pinia/nuxt', '@xarenas107/nuxt-socket-io'],
 
+    // OBS 浏览器来源会缓存页面；禁止展示端 HTML 被缓存，避免部署新版本后 OBS 仍运行旧页面
+    routeRules: {
+        '/subtitle': {
+            headers: { 'cache-control': 'no-store, max-age=0' },
+        },
+    },
+
     vite: {
         plugins: [
             {
