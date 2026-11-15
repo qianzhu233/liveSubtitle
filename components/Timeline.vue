@@ -98,6 +98,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch, ref, nextTick } from 'vue';
 import { useSubtitleStore } from '~/stores/subtitle';
+import { isEditableTarget, isPlaybackToggleShortcut } from '~/utils/keyboard';
 import type { SubtitleBlock } from '~/types/subtitle';
 
 const store = useSubtitleStore();
@@ -247,8 +248,18 @@ watch(selectedFile, (newFile) => {
 const handleKeyDown = (event: KeyboardEvent) => {
     if (!selectedFile.value) return;
 
-    const searchInput = document.querySelector('.search-input') as HTMLInputElement;
-    if (searchInput && document.activeElement === searchInput) {
+    if (isEditableTarget(event.target)) {
+        return;
+    }
+
+    if (isPlaybackToggleShortcut(event)) {
+        event.preventDefault();
+
+        if (isPlaying.value) {
+            store.pause();
+        } else {
+            store.play();
+        }
         return;
     }
 
