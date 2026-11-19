@@ -27,6 +27,27 @@ export interface PlaybackState {
     selectedFile: SubtitleFile | null;
 }
 
+// 实时同步角色：控制端可操作，展示端只负责渲染
+export type ClientRole = 'control' | 'display';
+
+// 控制端下发的全局字体设置（系统字体文件由服务端 /api/font-file 提供）
+export interface FontPayload {
+    fontFile: string;
+    fontFamily: string;
+    fontUrl: string;
+    fontUrls: string[];
+}
+
+// 服务端权威会话快照：客户端连接、重连或主动请求同步时下发
+export interface SessionSnapshot extends FontPayload {
+    selectedFile: SubtitleFile | null;
+    isPlaying: boolean;
+    currentTime: number;
+    duration: number;
+    // 快照生成时的服务端时间戳（ms），客户端可据此估算网络延迟
+    serverTime: number;
+}
+
 // 筛选选项类型
 export interface FilterOptions {
     searchText: string;

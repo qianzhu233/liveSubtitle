@@ -29,6 +29,7 @@ const socket: any = useSocketIO();
 
 let subtitleRenderer: any = null;
 let internalTimer: number | null = null;
+let disposeSocketListeners: (() => void) | null = null;
 
 const applyCurrentFont = (assContent: string): string =>
     fontFamily.value ? applyAssFont(assContent, fontFamily.value) : assContent;
@@ -49,17 +50,73 @@ const readFontUrls = (data: any): string[] => {
     return [];
 };
 
+/**
+ * 应用服务端权威快照：一次性恢复字幕文件、全局字体、播放进度与播放状态。
+ * 展示端本身不保存会话，重连后完全以服务端为准。
+ */
+const applySnapshot = (data: any) => {
+    const file = data?.selectedFile as SubtitleFile | undefined;
+    if (!file) return;
+
+    stopInternalTimer();
+    isPlaying.value = false;
+    currentTime.value = 0;
+    selectedFile.value = file;
+
+    if (typeof data.fontFamily === 'string') {
+        fontFamily.value = data.fontFamily;
+    }
+    fontUrls.value = readFontUrls(data);
+
+    void loadSubtitleFile(file).then(() => {
+        if (typeof data.currentTime === 'number' && Number.isFinite(data.currentTime)) {
+            currentTime.value = data.currentTime;
+        }
+        updateSubtitles();
+
+        if (data.isPlaying) {
+            isPlaying.value = true;
+            startInternalTimer();
+        }
+    });
+};
+
 const initSocketListeners = () => {
-    socket.on('connect', () => {
+    // 记录监听器，卸载时精确移除，避免页面来回切换后重复注册、重复加载字幕
+    const socketCleanups: Array<() => void> = [];
+    const handleSocketEvent = (event: string, handler: (...args: any[]) => void) => {
+        socket.on(event, handler);
+        socketCleanups.push(() => socket.off(event, handler));
+    };
+
+    const registerDisplay = () => {
         console.log('展示端已连接到服务器，Socket ID:', socket.id);
-        // OBS 浏览器来源刷新/断线重连后，请求控制端补发当前字幕与播放状态，
-        // 避免页面重载后一直空白直到操作者重新选歌
-        socket.emit('request-sync');
+        // 登记为展示端：服务端会立即下发权威快照（字幕、字体、播放进度），
+        // 因此 OBS 浏览器来源刷新/断线重连后不再需要向控制端请求补发。
+        socket.emit('register', { role: 'display' });
+    };
+
+    handleSocketEvent('connect', registerDisplay);
+    // 从控制端页面跳转过来时 socket 可能仍然保持连接，不会再次触发 connect
+    if (socket.connected) {
+        registerDisplay();
+    }
+
+    // 服务端权威快照：新连接、重连、服务端重启后的首次连接都会收到
+    handleSocketEvent('state-sync', (data: any) => {
+        console.log('收到会话快照:', data?.selectedFile?.id ?? '(空)');
+        applySnapshot(data);
     });
 
-    socket.on('play-state-change', (data: any) => {
+    handleSocketEvent('play-state-change', (data: any) => {
         console.log('收到播放状态变化:', data);
         isPlaying.value = data.isPlaying;
+
+        // 暂停事件携带精确进度；播放事件携带当前锚点，避免重连后从错误位置继续
+        if (typeof data.currentTime === 'number' && Number.isFinite(data.currentTime)) {
+            currentTime.value = data.currentTime;
+            updateSubtitles();
+        }
 
         if (data.isPlaying) {
             startInternalTimer();
@@ -68,7 +125,7 @@ const initSocketListeners = () => {
         }
     });
 
-    socket.on('time-sync', (data: any) => {
+    handleSocketEvent('time-sync', (data: any) => {
         console.log('收到时间同步:', data);
         currentTime.value = data.currentTime;
         updateSubtitles();
@@ -78,7 +135,7 @@ const initSocketListeners = () => {
         }
     });
 
-    socket.on('ass-content-update', (data: any) => {
+    handleSocketEvent('ass-content-update', (data: any) => {
         console.log('收到ASS文件更新:', data);
         if (!data.assContent) return;
 
@@ -86,14 +143,14 @@ const initSocketListeners = () => {
         reinitWithCurrentContent();
     });
 
-    socket.on('font-change', (data: any) => {
+    handleSocketEvent('font-change', (data: any) => {
         console.log('收到字体变化:', data);
         fontFamily.value = String(data?.fontFamily ?? '');
         fontUrls.value = readFontUrls(data);
         reinitWithCurrentContent();
     });
 
-    socket.on('file-selected', (data: any) => {
+    handleSocketEvent('file-selected', (data: any) => {
         console.log('收到文件选择:', data);
         // 切换字幕时先停掉旧字幕的计时器，避免旧时间线残留（之后由控制端的播放状态/时间同步驱动）
         stopInternalTimer();
@@ -108,14 +165,20 @@ const initSocketListeners = () => {
         loadSubtitleFile(data.file);
     });
 
-    socket.on('disconnect', () => {
+    handleSocketEvent('disconnect', () => {
         console.log('与服务器断开连接');
         stopInternalTimer();
     });
 
-    socket.on('connect_error', (error: any) => {
+    handleSocketEvent('connect_error', (error: any) => {
         console.error('Socket.io 连接错误:', error);
     });
+
+    return () => {
+        for (const cleanup of socketCleanups.splice(0)) {
+            cleanup();
+        }
+    };
 };
 
 const loadSubtitleFile = async (file: SubtitleFile) => {
@@ -258,8 +321,9 @@ const updateSubtitles = () => {
 
 onMounted(() => {
     console.log('展示端组件挂载');
+    // 先注册监听再连接，避免连接过快时漏掉 register 对应的快照
+    disposeSocketListeners = initSocketListeners();
     socket.connect();
-    initSocketListeners();
     const script = document.createElement('script');
     script.src = '/js/subtitles-octopus.js';
     script.onload = () => {
@@ -273,6 +337,8 @@ onMounted(() => {
 
 onUnmounted(() => {
     stopInternalTimer();
+    disposeSocketListeners?.();
+    disposeSocketListeners = null;
     socket.disconnect();
     if (subtitleRenderer) {
         subtitleRenderer.dispose();

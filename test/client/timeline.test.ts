@@ -10,9 +10,14 @@ import type { SubtitleFile } from '../../types/subtitle';
 // Timeline 依赖 Nuxt 自动导入的 socket store，这里提供一个最小替身
 const socketMock = vi.hoisted(() => {
     const emit = vi.fn();
-    const on = vi.fn();
+    const handlers = new Map<string, Array<(...args: any[]) => void>>();
+    const on = vi.fn((event: string, handler: (...args: any[]) => void) => {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+    });
     (globalThis as any).useSocketIOStore = () => ({ emit, on });
-    return { emit, on };
+    return { emit, on, handlers };
 });
 
 const testFile: SubtitleFile = {
@@ -47,10 +52,21 @@ const pressKey = (init: KeyboardEventInit = {}, target: EventTarget = document.b
 const playStateEmits = () =>
     socketMock.emit.mock.calls.filter(([eventName]) => eventName === 'play-state-change');
 
+const timeSyncEmits = () =>
+    socketMock.emit.mock.calls.filter(([eventName]) => eventName === 'time-sync');
+
+const trigger = (eventName: string, ...args: unknown[]) => {
+    for (const handler of socketMock.handlers.get(eventName) ?? []) {
+        handler(...args);
+    }
+};
+
 beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
 
+    socketMock.handlers.clear();
+    socketMock.on.mockClear();
     socketMock.emit.mockClear();
 
     const subtitleStore = useSubtitleStore(pinia);
@@ -73,10 +89,10 @@ describe('Timeline 空格键播放控制', () => {
         expect(store().isPlaying).toBe(true);
         expect(event.defaultPrevented).toBe(true);
         expect(playStateEmits()).toHaveLength(1);
-        expect(playStateEmits()[0]![1]).toEqual({ isPlaying: true });
+        expect(playStateEmits()[0]![1]).toEqual({ isPlaying: true, currentTime: 0 });
     });
 
-    it('播放时按空格暂停并广播状态', () => {
+    it('播放时按空格暂停并广播精确进度', () => {
         store().isPlaying = true;
 
         const event = pressKey();
@@ -84,8 +100,9 @@ describe('Timeline 空格键播放控制', () => {
         expect(store().isPlaying).toBe(false);
         expect(event.defaultPrevented).toBe(true);
 
-        const emits = playStateEmits();
-        expect(emits[emits.length - 1]![1]).toEqual({ isPlaying: false });
+        const payload = playStateEmits().at(-1)![1] as Record<string, unknown>;
+        expect(payload).toMatchObject({ isPlaying: false });
+        expect(payload.currentTime).toBeCloseTo(0, 3);
     });
 
     it('焦点在搜索框等输入控件时不拦截空格', () => {
@@ -154,11 +171,53 @@ describe('Timeline 播放头', () => {
         store().setCurrentTime(15);
         await nextTick();
 
-        store().selectedFile = { ...testFile, id: 'another-song', name: 'another-song' };
+        store().selectFile({ ...testFile, id: 'another-song', name: 'another-song' });
         await nextTick();
         await nextTick();
 
         const playhead = wrapper!.find('.playhead').element as HTMLElement;
         expect(playhead.style.left).toBe('0%');
+    });
+});
+
+describe('Timeline 多控制端同步', () => {
+    it('收到其它控制端暂停时不回发时间，避免事件回环', async () => {
+        store().isPlaying = true;
+        await nextTick();
+
+        socketMock.emit.mockClear();
+        trigger('play-state-change', { isPlaying: false, currentTime: 6 });
+        await nextTick();
+
+        expect(store().isPlaying).toBe(false);
+        expect(store().currentTime).toBe(6);
+        expect(timeSyncEmits()).toHaveLength(0);
+        expect(playStateEmits()).toHaveLength(0);
+    });
+
+    it('收到其它控制端跳转时只更新本地进度，不回发', async () => {
+        store().isPlaying = true;
+        await nextTick();
+
+        socketMock.emit.mockClear();
+        trigger('time-sync', { currentTime: 20 });
+        await nextTick();
+
+        expect(store().currentTime).toBe(20);
+        expect(timeSyncEmits()).toHaveLength(0);
+    });
+
+    it('收到其它控制端选文件时不重置播放状态回发', async () => {
+        socketMock.emit.mockClear();
+        trigger('file-selected', {
+            file: { ...testFile, id: 'remote-song', name: 'remote-song' },
+            fontFamily: '',
+        });
+        await nextTick();
+
+        expect(store().selectedFile?.id).toBe('remote-song');
+        expect(store().isPlaying).toBe(false);
+        expect(playStateEmits()).toHaveLength(0);
+        expect(timeSyncEmits()).toHaveLength(0);
     });
 });

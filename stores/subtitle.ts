@@ -36,6 +36,8 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         searchText: '',
     });
     const filterConfig = ref<FilterConfig>([]);
+    // 远端（其它控制端/服务端快照）跳转时间时递增；Timeline 用它重新对齐播放锚点
+    const seekVersion = ref(0);
 
     // socket.io - auto-imported by @xarenas107/nuxt-socket-io
     const socket: any = useSocketIOStore();
@@ -64,30 +66,119 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         );
     });
 
+    const clampCurrentTime = (time: number): number => {
+        if (!Number.isFinite(time)) return 0;
+        const duration = selectedFile.value?.duration ?? 0;
+        return Math.max(0, Math.min(time, duration));
+    };
+
+    // ---------------------------------------------------------------------
+    // 远端状态应用：只更新本地状态，绝不回发 socket。
+    // 多控制端同时在线时，回发会形成事件风暴（A 收到 B → A 再广播 → B 再广播…）。
+    // ---------------------------------------------------------------------
+    const applyRemoteFontFamily = (fontFamily: unknown) => {
+        if (typeof fontFamily === 'string') {
+            selectedFont.value = fontFamily;
+        }
+    };
+
+    const applyRemoteFileSelection = (data: any): boolean => {
+        const file = data?.file as SubtitleFile | undefined;
+        if (!file || typeof file.id !== 'string') return false;
+
+        selectedFile.value = file;
+        currentTime.value = 0;
+        isPlaying.value = false;
+        applyRemoteFontFamily(data?.fontFamily);
+        return true;
+    };
+
+    const applyRemoteTime = (time: unknown): boolean => {
+        const value = Number(time);
+        if (!selectedFile.value || !Number.isFinite(value)) return false;
+
+        currentTime.value = clampCurrentTime(value);
+        seekVersion.value++;
+        return true;
+    };
+
+    const applyRemotePlayState = (data: any) => {
+        if (!selectedFile.value) return;
+
+        applyRemoteTime(data?.currentTime);
+        isPlaying.value = data?.isPlaying === true;
+    };
+
+    const applyRemoteFontChange = (data: any) => {
+        applyRemoteFontFamily(data?.fontFamily);
+    };
+
+    /** 连接/重连时由服务端下发：服务端是权威状态，本地直接对齐 */
+    const applySnapshot = (snapshot: any): boolean => {
+        const file = snapshot?.selectedFile as SubtitleFile | undefined;
+        if (!file || typeof file.id !== 'string') return false;
+
+        // 同一首歌重连时不替换对象，避免 Timeline 把缩放和滚动位置重置
+        const sameFile = selectedFile.value?.id === file.id;
+        if (!sameFile) {
+            selectedFile.value = file;
+        }
+        currentTime.value = clampCurrentTime(Number(snapshot.currentTime));
+        applyRemoteFontFamily(snapshot.fontFamily);
+        seekVersion.value++;
+        isPlaying.value = snapshot.isPlaying === true;
+        return true;
+    };
+
+    // ---------------------------------------------------------------------
+    // 本地操作：更新本地状态并广播给服务端（服务端再转发给其它前端）
+    // ---------------------------------------------------------------------
     const selectFile = (file: SubtitleFile) => {
         selectedFile.value = file;
         currentTime.value = 0;
         isPlaying.value = false;
-        broadcastFileSelect(file);
+        socket.emit('file-selected', { file, ...selectedFontPayload.value });
     };
 
     const play = () => {
-        if (selectedFile.value) {
-            isPlaying.value = true;
-            broadcastPlayStateChange();
-        }
+        if (!selectedFile.value) return;
+        isPlaying.value = true;
+        socket.emit('play-state-change', {
+            isPlaying: true,
+            currentTime: currentTime.value,
+        });
     };
 
-    const pause = () => {
+    /**
+     * 暂停并广播。传入精确进度时以它为准：Timeline 的播放锚点比 store 里的
+     * 低频同步值更精确，暂停瞬间把锚点时间一起发出去，其它前端才能停在同一帧。
+     */
+    const pause = (time?: number) => {
+        if (!selectedFile.value) return;
+        if (typeof time === 'number') {
+            currentTime.value = clampCurrentTime(time);
+        }
         isPlaying.value = false;
-        broadcastPlayStateChange();
+        socket.emit('play-state-change', {
+            isPlaying: false,
+            currentTime: currentTime.value,
+        });
     };
 
     const setCurrentTime = (time: number) => {
-        if (selectedFile.value) {
-            currentTime.value = Math.max(0, Math.min(time, selectedFile.value.duration));
-            broadcastTimeSync();
-        }
+        if (!selectedFile.value) return;
+        currentTime.value = clampCurrentTime(time);
+        socket.emit('time-sync', { currentTime: currentTime.value });
+    };
+
+    /**
+     * 播放过程中的本地进度推进：只改本地，不广播。
+     * 展示端由服务端时钟按 10Hz 统一驱动；控制端各自从同一锚点外推，
+     * 因此多个控制端之间不会互发时间、也不会因为后台节流产生回环。
+     */
+    const updatePlaybackTime = (time: number) => {
+        if (!selectedFile.value) return;
+        currentTime.value = clampCurrentTime(time);
     };
 
     const updateFilter = (newFilter: Partial<FilterOptions>) => {
@@ -100,44 +191,61 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const broadcastPlayStateChange = () => {
-        socket.emit('play-state-change', { isPlaying: isPlaying.value });
-    };
-
-    const broadcastTimeSync = () => {
-        socket.emit('time-sync', { currentTime: currentTime.value });
-    };
-
-    const broadcastFileSelect = (file: SubtitleFile) => {
-        // 字体是展示端的全局设置，随文件选择一起下发，保证切换歌曲后仍然生效
-        socket.emit('file-selected', { file, ...selectedFontPayload.value });
-    };
-
     // 字体设置对全局生效：单独通知展示端，由展示端应用到所有字幕内容上
     const broadcastFontChange = () => {
         socket.emit('font-change', selectedFontPayload.value);
     };
 
-    // 展示端刷新/重连后主动请求同步，避免 OBS 页面重载后一直空白
-    const resyncDisplay = () => {
+    // 服务端没有权威状态时（通常是服务重启），用本地状态重新播种
+    const seedServer = () => {
         if (!selectedFile.value) return;
         socket.emit('file-selected', {
             file: selectedFile.value,
             ...selectedFontPayload.value,
         });
-        socket.emit('play-state-change', { isPlaying: isPlaying.value });
-        socket.emit('time-sync', { currentTime: currentTime.value });
+        socket.emit('play-state-change', {
+            isPlaying: isPlaying.value,
+            currentTime: currentTime.value,
+        });
     };
 
-    socket.on('request-sync', () => {
-        console.log('[socket.io] 展示端请求同步状态');
-        resyncDisplay();
-    });
-    socket.on('connect', () => {
-        // 控制端重连时也补发一次状态，防止服务重启后两端状态不一致
-        if (selectedFile.value) {
-            resyncDisplay();
+    // 连接后登记为控制端，服务端会立即下发权威快照
+    const registerControl = () => {
+        console.log('[socket.io] 控制端登记角色 control');
+        socket.emit('register', { role: 'control' });
+    };
+    socket.on('connect', registerControl);
+    // 页面切换/HMR 等场景下 socket 可能已经连接，仍需补登记一次
+    if (socket.status?.connected) {
+        registerControl();
+    }
+
+    socket.on('state-sync', (snapshot: any) => {
+        console.log('[socket.io] 收到会话快照');
+        if (applySnapshot(snapshot)) {
+            return;
         }
+        // 服务端没有会话、但本页已有状态：把本地状态补回服务端，避免服务重启后丢失
+        seedServer();
+    });
+
+    socket.on('file-selected', (data: any) => {
+        console.log('[socket.io] 其它控制端切换了字幕文件');
+        applyRemoteFileSelection(data);
+    });
+
+    socket.on('play-state-change', (data: any) => {
+        console.log('[socket.io] 其它控制端切换了播放状态');
+        applyRemotePlayState(data);
+    });
+
+    socket.on('time-sync', (data: any) => {
+        applyRemoteTime(data?.currentTime);
+    });
+
+    socket.on('font-change', (data: any) => {
+        console.log('[socket.io] 其它控制端切换了字体');
+        applyRemoteFontChange(data);
     });
 
     const loadSubtitleFiles = async () => {
@@ -157,7 +265,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         try {
             fontOptions.value = await fetchFontOptions();
             // 之前选中的字体族如果已不存在，回到跟随原字幕
-            if (selectedFont.value && !selectedFontOption.value) {
+            if (selectedFont.value && fontOptions.value.length > 0 && !selectedFontOption.value) {
                 selectedFont.value = '';
             }
         } catch (error) {
@@ -178,6 +286,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         filterOptions,
         filterConfig,
         isLoading,
+        seekVersion,
         filteredFiles,
         filters,
         filterTypes,
@@ -186,12 +295,11 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         play,
         pause,
         setCurrentTime,
+        updatePlaybackTime,
         updateFilter,
         formatTime,
         loadSubtitleFiles,
         loadFontOptions,
-        broadcastPlayStateChange,
-        broadcastTimeSync,
         broadcastFontChange,
     };
 });

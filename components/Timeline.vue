@@ -212,13 +212,11 @@ const getPlaybackTime = (): number | null => {
 };
 
 const finishPlayback = () => {
-    const duration = selectedFile.value?.duration ?? 0;
     latestAutoTime = null;
     playStartTime = null;
     playStartCurrentTime = null;
-    updatePlayheadPosition(duration);
-    store.pause();
-    store.setCurrentTime(0);
+    // 暂停并把进度归零一起广播，其它控制端/展示端才能同步回到起点
+    store.pause(0);
 };
 
 // 每帧只改播放头 DOM，不触发整条时间轴重渲染
@@ -251,7 +249,7 @@ const syncPlaybackTime = () => {
     }
 
     latestAutoTime = time;
-    store.setCurrentTime(time);
+    store.updatePlaybackTime(time);
 };
 
 const startAutoPlay = () => {
@@ -274,12 +272,9 @@ const stopAutoPlay = () => {
         playSyncIntervalId = null;
     }
 
-    // 暂停瞬间把精确时间补写回 store（即使页面在后台、rAF 被暂停也能取到正确值）
-    if (playStartTime !== null && playStartCurrentTime !== null && selectedFile.value) {
-        const elapsed = (performance.now() - playStartTime) / 1000;
-        const finalTime = Math.min(playStartCurrentTime + elapsed, selectedFile.value.duration);
-        store.setCurrentTime(finalTime);
-    }
+    // 只清理本地播放锚点，不再回写/广播时间：
+    // 远端暂停时这里若广播，会把本地锚点算出的旧时间发回服务端，形成回环。
+    // 暂停所需的精确时间由 pause(time) 的调用方负责传入。
     latestAutoTime = null;
     playStartTime = null;
     playStartCurrentTime = null;
@@ -294,21 +289,20 @@ const startWatching = () => {
 };
 
 watch(selectedFile, (newFile) => {
-    if (newFile) {
-        // 先停掉上一首的播放循环，避免把旧时间写进新文件
-        stopAutoPlay();
-        latestAutoTime = null;
-        store.setCurrentTime(0);
-        store.pause();
-        zoomLevel.value = 1;
-        nextTick(() => {
-            updatePlayheadPosition(0);
-            const scrollContainer = document.querySelector('.timeline-scroll-container');
-            if (scrollContainer) {
-                scrollContainer.scrollLeft = 0;
-            }
-        });
-    }
+    if (!newFile) return;
+
+    // 先停掉上一首的播放循环，避免把旧时间写进新文件。
+    // 文件、进度与播放状态已由 store 的本地选择/远端快照统一重置，这里只处理视图。
+    stopAutoPlay();
+    latestAutoTime = null;
+    zoomLevel.value = 1;
+    nextTick(() => {
+        updatePlayheadPosition(store.currentTime);
+        const scrollContainer = document.querySelector('.timeline-scroll-container');
+        if (scrollContainer) {
+            scrollContainer.scrollLeft = 0;
+        }
+    });
 });
 
 const handleKeyDown = (event: KeyboardEvent) => {
@@ -322,7 +316,8 @@ const handleKeyDown = (event: KeyboardEvent) => {
         event.preventDefault();
 
         if (isPlaying.value) {
-            store.pause();
+            // 暂停时带上精确锚点时间，让其它控制端/展示端停在同一帧
+            store.pause(getPlaybackTime() ?? store.currentTime);
         } else {
             store.play();
         }
@@ -514,6 +509,18 @@ onUnmounted(() => {
 });
 
 watch(isPlaying, startWatching);
+
+// 远端跳转（其它控制端 seek / 服务端快照）后重新对齐本地播放锚点，
+// 否则下一帧会用旧锚点把时间拉回去；本地播放推进不会递增 seekVersion。
+watch(
+    () => store.seekVersion,
+    () => {
+        if (!isPlaying.value) return;
+        playStartTime = performance.now();
+        playStartCurrentTime = currentTime.value;
+        latestAutoTime = currentTime.value;
+    },
+);
 
 let lastAutoScrollTime = 0;
 let isUserScrolling = false;

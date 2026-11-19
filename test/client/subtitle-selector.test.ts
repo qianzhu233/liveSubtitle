@@ -215,26 +215,32 @@ describe('SubtitleSelector 颜色与字体', () => {
         expect(assUpdateCalls).toHaveLength(0);
     });
 
-    it('展示端请求同步时补发当前选中的字幕/字体/播放状态', async () => {
+    it('服务端快照会同步其它控制端的选歌、字体与播放状态，且不回发', async () => {
+        triggerSocketEvent('state-sync', {
+            selectedFile: testFile,
+            isPlaying: true,
+            currentTime: 3,
+            duration: 30,
+            serverTime: Date.now(),
+            fontFile: 'HarmonyOS_Sans_SC_Regular.ttf',
+            fontFamily: 'HarmonyOS Sans SC',
+            fontUrl: '/api/font-file/harmony-regular',
+            fontUrls: ['/api/font-file/harmony-regular'],
+        });
+        await flushAll();
+
         const store = useSubtitleStore(pinia);
-        store.selectFile(testFile);
-        store.play();
-        store.setCurrentTime(3);
-        socketMock.emit.mockClear();
+        expect(store.selectedFile?.id).toBe('test-song');
+        expect(store.currentTime).toBe(3);
+        expect(store.isPlaying).toBe(true);
+        expect(store.selectedFont).toBe('HarmonyOS Sans SC');
 
-        triggerSocketEvent('request-sync');
-
-        const fileSelectedCalls = emitCalls('file-selected');
-        expect(fileSelectedCalls).toHaveLength(1);
-        expect(fileSelectedCalls[0]![1]).toMatchObject({ file: testFile });
-
-        const playStateCalls = emitCalls('play-state-change');
-        expect(playStateCalls).toHaveLength(1);
-        expect(playStateCalls[0]![1]).toEqual({ isPlaying: true });
-
-        const timeSyncCalls = emitCalls('time-sync');
-        expect(timeSyncCalls).toHaveLength(1);
-        expect(timeSyncCalls[0]![1]).toEqual({ currentTime: 3 });
+        expect(wrapper!.find('.file-item-selected').exists()).toBe(true);
+        expect((wrapper!.find('select.font-select').element as HTMLSelectElement).value).toBe(
+            'HarmonyOS Sans SC',
+        );
+        // 快照只用于本地对齐，不能再广播回去
+        expect(socketMock.emit).not.toHaveBeenCalled();
     });
 });
 
