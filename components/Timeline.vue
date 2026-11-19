@@ -30,6 +30,7 @@
                     <div class="track-content">
                         <div
                             v-for="block in track1Blocks"
+                            v-memo="[isBlockActive(block)]"
                             :key="block.id"
                             class="subtitle-block block-track1"
                             :class="{ 'block-active': isBlockActive(block) }"
@@ -48,6 +49,7 @@
                     <div class="track-content">
                         <div
                             v-for="block in track2Blocks"
+                            v-memo="[isBlockActive(block)]"
                             :key="block.id"
                             class="subtitle-block block-track2"
                             :class="{ 'block-active': isBlockActive(block) }"
@@ -62,13 +64,7 @@
                     </div>
                 </div>
 
-                <div
-                    v-if="selectedFile"
-                    class="playhead"
-                    :style="{
-                        left: `${(currentTime / (selectedFile?.duration || 100)) * 100}%`,
-                    }"
-                >
+                <div v-if="selectedFile" ref="playheadRef" class="playhead">
                     <div class="playhead-handle"></div>
                 </div>
             </div>
@@ -104,10 +100,19 @@ import type { SubtitleBlock } from '~/types/subtitle';
 const store = useSubtitleStore();
 
 const zoomLevel = ref(1);
+const playheadRef = ref<HTMLDivElement | null>(null);
 
 const selectedFile = computed(() => store.selectedFile);
 const currentTime = computed(() => store.currentTime);
 const isPlaying = computed(() => store.isPlaying);
+
+// 播放头直接写 DOM 位置，避免每个动画帧都触发整个时间轴（几百个字幕块）重新渲染
+const updatePlayheadPosition = (time: number) => {
+    if (!playheadRef.value || !selectedFile.value) return;
+    const duration = selectedFile.value.duration || 100;
+    const percent = Math.min(100, Math.max(0, (time / duration) * 100));
+    playheadRef.value.style.left = `${percent}%`;
+};
 
 const maxDuration = computed(() => {
     if (!selectedFile.value) return 100;
@@ -160,9 +165,10 @@ const seekToTime = (time: number) => {
     store.setCurrentTime(time);
     store.play();
 
-    if (playInterval) {
-        playStartTime = Date.now();
+    if (playRafId !== null) {
+        playStartTime = performance.now();
         playStartCurrentTime = time;
+        latestAutoTime = time;
     }
 };
 
@@ -183,42 +189,98 @@ const adjustTime = (adjustment: number) => {
     );
     store.setCurrentTime(newTime);
 
-    if (isPlaying.value && playInterval) {
-        playStartTime = Date.now();
+    if (isPlaying.value && playRafId !== null) {
+        playStartTime = performance.now();
         playStartCurrentTime = newTime;
+        latestAutoTime = newTime;
     }
 };
 
-let playInterval: number | null = null;
+let playRafId: number | null = null;
+let playSyncIntervalId: number | null = null;
 let playStartTime: number | null = null;
 let playStartCurrentTime: number | null = null;
+let latestAutoTime: number | null = null;
+
+// 播放头动画走 requestAnimationFrame，时间状态按低频写回 store：
+// 既保证指针顺滑，又避免每帧重渲染几百个字幕块、每帧都发 socket。
+const PLAYBACK_SYNC_INTERVAL_MS = 100;
+
+const getPlaybackTime = (): number | null => {
+    if (playStartTime === null || playStartCurrentTime === null) return null;
+    return playStartCurrentTime + (performance.now() - playStartTime) / 1000;
+};
+
+const finishPlayback = () => {
+    const duration = selectedFile.value?.duration ?? 0;
+    latestAutoTime = null;
+    playStartTime = null;
+    playStartCurrentTime = null;
+    updatePlayheadPosition(duration);
+    store.pause();
+    store.setCurrentTime(0);
+};
+
+// 每帧只改播放头 DOM，不触发整条时间轴重渲染
+const animatePlayhead = () => {
+    playRafId = null;
+
+    if (!isPlaying.value || !selectedFile.value) return;
+
+    const time = getPlaybackTime();
+    if (time === null) return;
+    if (time >= selectedFile.value.duration) {
+        finishPlayback();
+        return;
+    }
+
+    latestAutoTime = time;
+    updatePlayheadPosition(time);
+    playRafId = requestAnimationFrame(animatePlayhead);
+};
+
+// 低频同步时间/播放状态（页面在后台时 rAF 会暂停，这个定时器仍能让时间和展示端同步继续推进）
+const syncPlaybackTime = () => {
+    if (!isPlaying.value || !selectedFile.value) return;
+
+    const time = getPlaybackTime();
+    if (time === null) return;
+    if (time >= selectedFile.value.duration) {
+        finishPlayback();
+        return;
+    }
+
+    latestAutoTime = time;
+    store.setCurrentTime(time);
+};
 
 const startAutoPlay = () => {
-    if (playInterval) return;
+    if (playRafId !== null || playSyncIntervalId !== null) return;
 
-    playStartTime = Date.now();
+    playStartTime = performance.now();
     playStartCurrentTime = currentTime.value;
-
-    playInterval = window.setInterval(() => {
-        if (isPlaying.value && selectedFile.value) {
-            const elapsed = (Date.now() - playStartTime!) / 1000;
-            const newTime = playStartCurrentTime! + elapsed;
-
-            if (newTime >= selectedFile.value.duration) {
-                store.pause();
-                store.setCurrentTime(0);
-            } else {
-                store.setCurrentTime(newTime);
-            }
-        }
-    }, 16);
+    latestAutoTime = currentTime.value;
+    playRafId = requestAnimationFrame(animatePlayhead);
+    playSyncIntervalId = window.setInterval(syncPlaybackTime, PLAYBACK_SYNC_INTERVAL_MS);
 };
 
 const stopAutoPlay = () => {
-    if (playInterval) {
-        clearInterval(playInterval);
-        playInterval = null;
+    if (playRafId !== null) {
+        cancelAnimationFrame(playRafId);
+        playRafId = null;
     }
+    if (playSyncIntervalId !== null) {
+        clearInterval(playSyncIntervalId);
+        playSyncIntervalId = null;
+    }
+
+    // 暂停瞬间把精确时间补写回 store（即使页面在后台、rAF 被暂停也能取到正确值）
+    if (playStartTime !== null && playStartCurrentTime !== null && selectedFile.value) {
+        const elapsed = (performance.now() - playStartTime) / 1000;
+        const finalTime = Math.min(playStartCurrentTime + elapsed, selectedFile.value.duration);
+        store.setCurrentTime(finalTime);
+    }
+    latestAutoTime = null;
     playStartTime = null;
     playStartCurrentTime = null;
 };
@@ -233,10 +295,14 @@ const startWatching = () => {
 
 watch(selectedFile, (newFile) => {
     if (newFile) {
+        // 先停掉上一首的播放循环，避免把旧时间写进新文件
+        stopAutoPlay();
+        latestAutoTime = null;
         store.setCurrentTime(0);
         store.pause();
         zoomLevel.value = 1;
         nextTick(() => {
+            updatePlayheadPosition(0);
             const scrollContainer = document.querySelector('.timeline-scroll-container');
             if (scrollContainer) {
                 scrollContainer.scrollLeft = 0;
@@ -325,15 +391,15 @@ const handleKeyDown = (event: KeyboardEvent) => {
                 const nextBlock = track1Blocks[nextBlockIndex];
                 store.setCurrentTime(nextBlock.startTime);
                 store.play();
-                if (playInterval) {
-                    playStartTime = Date.now();
+                if (playRafId !== null) {
+                    playStartTime = performance.now();
                     playStartCurrentTime = nextBlock.startTime;
                 }
             } else if (track1Blocks.length > 0) {
                 store.setCurrentTime(track1Blocks[0].startTime);
                 store.play();
-                if (playInterval) {
-                    playStartTime = Date.now();
+                if (playRafId !== null) {
+                    playStartTime = performance.now();
                     playStartCurrentTime = track1Blocks[0].startTime;
                 }
             }
@@ -341,8 +407,8 @@ const handleKeyDown = (event: KeyboardEvent) => {
             const currentBlock = track1Blocks[currentBlockIndex];
             if (currentTime === currentBlock.startTime) {
                 store.play();
-                if (playInterval) {
-                    playStartTime = Date.now();
+                if (playRafId !== null) {
+                    playStartTime = performance.now();
                     playStartCurrentTime = currentTime;
                 }
             } else {
@@ -350,8 +416,8 @@ const handleKeyDown = (event: KeyboardEvent) => {
                     const nextBlock = track1Blocks[currentBlockIndex + 1];
                     store.setCurrentTime(nextBlock.startTime);
                     store.play();
-                    if (playInterval) {
-                        playStartTime = Date.now();
+                    if (playRafId !== null) {
+                        playStartTime = performance.now();
                         playStartCurrentTime = nextBlock.startTime;
                     }
                 }
@@ -391,15 +457,15 @@ const handleKeyDown = (event: KeyboardEvent) => {
                 const nextBlock = track2Blocks[nextBlockIndex];
                 store.setCurrentTime(nextBlock.startTime);
                 store.play();
-                if (playInterval) {
-                    playStartTime = Date.now();
+                if (playRafId !== null) {
+                    playStartTime = performance.now();
                     playStartCurrentTime = nextBlock.startTime;
                 }
             } else if (track2Blocks.length > 0) {
                 store.setCurrentTime(track2Blocks[0].startTime);
                 store.play();
-                if (playInterval) {
-                    playStartTime = Date.now();
+                if (playRafId !== null) {
+                    playStartTime = performance.now();
                     playStartCurrentTime = track2Blocks[0].startTime;
                 }
             }
@@ -407,8 +473,8 @@ const handleKeyDown = (event: KeyboardEvent) => {
             const currentBlock = track2Blocks[currentBlockIndex];
             if (currentTime === currentBlock.startTime) {
                 store.play();
-                if (playInterval) {
-                    playStartTime = Date.now();
+                if (playRafId !== null) {
+                    playStartTime = performance.now();
                     playStartCurrentTime = currentTime;
                 }
             } else {
@@ -416,8 +482,8 @@ const handleKeyDown = (event: KeyboardEvent) => {
                     const nextBlock = track2Blocks[currentBlockIndex + 1];
                     store.setCurrentTime(nextBlock.startTime);
                     store.play();
-                    if (playInterval) {
-                        playStartTime = Date.now();
+                    if (playRafId !== null) {
+                        playStartTime = performance.now();
                         playStartCurrentTime = nextBlock.startTime;
                     }
                 }
@@ -428,6 +494,7 @@ const handleKeyDown = (event: KeyboardEvent) => {
 
 onMounted(() => {
     startWatching();
+    updatePlayheadPosition(store.currentTime);
     document.addEventListener('keydown', handleKeyDown);
 
     const scrollContainer = document.querySelector('.timeline-scroll-container');
@@ -452,6 +519,8 @@ let lastAutoScrollTime = 0;
 let isUserScrolling = false;
 
 watch(currentTime, (newTime) => {
+    updatePlayheadPosition(newTime);
+
     if (selectedFile.value && isPlaying.value && !isUserScrolling) {
         const now = Date.now();
         if (now - lastAutoScrollTime > 500) {
@@ -497,7 +566,7 @@ watch(currentTime, (newTime) => {
     overflow-y: hidden;
     scrollbar-width: thin;
     scrollbar-color: #6b7280 #374151;
-    scroll-behavior: smooth;
+    scroll-behavior: auto;
     padding-bottom: 12px;
 }
 
@@ -625,7 +694,7 @@ watch(currentTime, (newTime) => {
     background-color: #ef4444;
     z-index: 10;
     pointer-events: none;
-    transition: left 0.1s linear;
+    will-change: left;
 }
 
 .playhead-handle {

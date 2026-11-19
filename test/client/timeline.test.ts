@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { mount, type VueWrapper } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import Timeline from '../../components/Timeline.vue';
 import { useSubtitleStore } from '../../stores/subtitle';
 import type { SubtitleFile } from '../../types/subtitle';
@@ -9,8 +10,9 @@ import type { SubtitleFile } from '../../types/subtitle';
 // Timeline 依赖 Nuxt 自动导入的 socket store，这里提供一个最小替身
 const socketMock = vi.hoisted(() => {
     const emit = vi.fn();
-    (globalThis as any).useSocketIOStore = () => ({ emit });
-    return { emit };
+    const on = vi.fn();
+    (globalThis as any).useSocketIOStore = () => ({ emit, on });
+    return { emit, on };
 });
 
 const testFile: SubtitleFile = {
@@ -136,5 +138,27 @@ describe('Timeline 空格键播放控制', () => {
 
         expect(store().isPlaying).toBe(false);
         expect(playStateEmits()).toHaveLength(0);
+    });
+});
+
+describe('Timeline 播放头', () => {
+    it('时间变化时直接更新播放头位置', async () => {
+        store().setCurrentTime(15);
+        await nextTick();
+
+        const playhead = wrapper!.find('.playhead').element as HTMLElement;
+        expect(playhead.style.left).toBe('50%');
+    });
+
+    it('切换文件后播放头回到起点', async () => {
+        store().setCurrentTime(15);
+        await nextTick();
+
+        store().selectedFile = { ...testFile, id: 'another-song', name: 'another-song' };
+        await nextTick();
+        await nextTick();
+
+        const playhead = wrapper!.find('.playhead').element as HTMLElement;
+        expect(playhead.style.left).toBe('0%');
     });
 });
