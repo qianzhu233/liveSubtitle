@@ -11,16 +11,27 @@ export const useSubtitleStore = defineStore('subtitle', () => {
     const isPlaying = ref(false);
     const currentTime = ref(0);
     const fontOptions = ref<FontOption[]>([]);
-    // 空字符串 = 默认（原样式）；非空时存字体文件名，保证同族不同字重可区分
+    // 空字符串 = 跟随原字幕（ASS 样式）；非空时存字体族名，字体文件由系统字体列表提供
     const selectedFont = ref('');
     const selectedFontOption = computed(
-        () => fontOptions.value.find((option) => option.fileName === selectedFont.value) ?? null,
+        () => fontOptions.value.find((option) => option.familyName === selectedFont.value) ?? null,
     );
-    const selectedFontPayload = computed(() => ({
-        fontFile: selectedFontOption.value?.fileName ?? '',
-        fontFamily: selectedFontOption.value?.familyName ?? '',
-        fontUrl: selectedFontOption.value?.url ?? '',
-    }));
+    const selectedFontPayload = computed(() => {
+        const option = selectedFontOption.value;
+        const urls = option
+            ? option.urls && option.urls.length > 0
+                ? option.urls
+                : option.url
+                  ? [option.url]
+                  : []
+            : [];
+        return {
+            fontFile: option?.fileName ?? '',
+            fontFamily: option?.familyName ?? '',
+            fontUrl: option?.url ?? '',
+            fontUrls: [...urls],
+        };
+    });
     const filterOptions = ref<FilterOptions>({
         searchText: '',
     });
@@ -145,7 +156,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
     const loadFontOptions = async () => {
         try {
             fontOptions.value = await fetchFontOptions();
-            // 之前选中的字体文件如果已不存在，回到默认样式
+            // 之前选中的字体族如果已不存在，回到跟随原字幕
             if (selectedFont.value && !selectedFontOption.value) {
                 selectedFont.value = '';
             }

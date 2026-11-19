@@ -1,10 +1,102 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { FilterConfig, SubtitleBlock, SubtitleFile } from '../../types/subtitle';
 import { assToBlocks, decodeAssBuffer, parseAssContent } from './ass';
 
 const SUBTITLE_FILES_DIR = 'subtitleFiles';
+const OUTPUT_DIR_NAME = '.output';
 const CONFIG_FILE_NAME = 'config.txt';
+
+/** 字幕目录解析参数（主要供测试注入，生产环境按 cwd / 服务端模块位置自动查找） */
+export interface SubtitleDirOptions {
+    cwd?: string;
+    moduleDir?: string;
+    entryPath?: string;
+    /** 直接指定 subtitleFiles 目录；也可通过环境变量 SUBTITLE_FILES_DIR 设置 */
+    envDir?: string;
+}
+
+function isDirectory(target: string): boolean {
+    try {
+        return fs.statSync(target).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * 从起始目录向上查找编译产物中的 .output/subtitleFiles。
+ * 这样无论服务从项目根目录、.output 还是其它 cwd 启动，都优先读取构建产物里的字幕数据。
+ */
+function findOutputSubtitleDir(startDir: string): string | null {
+    if (!startDir) {
+        return null;
+    }
+
+    let current = path.resolve(startDir);
+
+    for (let depth = 0; depth < 8; depth++) {
+        if (path.basename(current) === OUTPUT_DIR_NAME) {
+            const candidate = path.join(current, SUBTITLE_FILES_DIR);
+            if (isDirectory(candidate)) {
+                return candidate;
+            }
+        }
+
+        const candidate = path.join(current, OUTPUT_DIR_NAME, SUBTITLE_FILES_DIR);
+        if (isDirectory(candidate)) {
+            return candidate;
+        }
+
+        const parent = path.dirname(current);
+        if (parent === current) {
+            break;
+        }
+        current = parent;
+    }
+
+    return null;
+}
+
+function getModuleDirectory(): string {
+    try {
+        return path.dirname(fileURLToPath(import.meta.url));
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * 解析实际使用的 subtitleFiles 目录：
+ * 1. 环境变量 SUBTITLE_FILES_DIR（直接指向字幕目录）
+ * 2. 当前工作目录 / 服务端模块位置 / 入口脚本位置附近的 .output/subtitleFiles
+ * 3. 项目根目录下的 subtitleFiles（未构建时的开发回退）
+ */
+export function resolveSubtitleFilesDir(options: SubtitleDirOptions = {}): string {
+    const envDir = options.envDir ?? process.env.SUBTITLE_FILES_DIR;
+    if (envDir) {
+        return path.resolve(envDir);
+    }
+
+    const cwd = options.cwd ?? process.cwd();
+    const moduleDir = options.moduleDir ?? getModuleDirectory();
+    const entryDir = options.entryPath ? path.dirname(options.entryPath) : '';
+
+    for (const startDir of [cwd, moduleDir, entryDir]) {
+        const found = findOutputSubtitleDir(startDir);
+        if (found) {
+            return found;
+        }
+    }
+
+    return path.join(cwd, SUBTITLE_FILES_DIR);
+}
+
+/** 显式传入 rootDir 时按 <rootDir>/subtitleFiles 读取（测试用），否则按编译产物解析 */
+function getSubtitleFilesDir(rootDir?: string): string {
+    return rootDir ? path.join(rootDir, SUBTITLE_FILES_DIR) : resolveSubtitleFilesDir();
+}
 
 function timeToSeconds(timeStr: string | undefined): number {
     if (!timeStr) {
@@ -160,13 +252,14 @@ function loadSubtitleFile(folderPath: string, songName: string): SubtitleFile | 
 
 /**
  * 读取 subtitleFiles 下所有歌曲目录的字幕文件。
- * @param rootDir 项目根目录，默认为 process.cwd()（测试可传临时目录）
+ * 不传 rootDir 时优先读取编译产物中的 .output/subtitleFiles。
+ * @param rootDir 显式指定项目根目录（测试用）
  */
-export function readAllSubtitleFiles(rootDir: string = process.cwd()): SubtitleFile[] {
-    const subtitleFilesDir = path.join(rootDir, SUBTITLE_FILES_DIR);
+export function readAllSubtitleFiles(rootDir?: string): SubtitleFile[] {
+    const subtitleFilesDir = getSubtitleFilesDir(rootDir);
 
     if (!fs.existsSync(subtitleFilesDir)) {
-        console.warn('subtitleFiles 文件夹不存在');
+        console.warn(`subtitleFiles 文件夹不存在: ${subtitleFilesDir}`);
         return [];
     }
 
@@ -194,10 +287,11 @@ export function readAllSubtitleFiles(rootDir: string = process.cwd()): SubtitleF
 
 /**
  * 读取过滤器配置。
- * @param rootDir 项目根目录，默认为 process.cwd()（测试可传临时目录）
+ * 不传 rootDir 时优先读取编译产物中的 .output/subtitleFiles。
+ * @param rootDir 显式指定项目根目录（测试用）
  */
-export function readFilterConfig(rootDir: string = process.cwd()): FilterConfig {
-    const configPath = path.join(rootDir, SUBTITLE_FILES_DIR, 'filter-config.json');
+export function readFilterConfig(rootDir?: string): FilterConfig {
+    const configPath = path.join(getSubtitleFilesDir(rootDir), 'filter-config.json');
 
     if (!fs.existsSync(configPath)) {
         console.warn('过滤器配置文件不存在，返回空配置');
@@ -218,10 +312,11 @@ export function readFilterConfig(rootDir: string = process.cwd()): FilterConfig 
  * 读取指定歌曲目录的 ASS/SSA 原始内容（已按文件编码解码为字符串）。
  * 查找规则与 readAllSubtitleFiles 的 ASS 回退一致：
  * subtitle.ass → 其它 *.ass → *.ssa。
- * @param rootDir 项目根目录，默认为 process.cwd()（测试可传临时目录）
+ * 不传 rootDir 时优先读取编译产物中的 .output/subtitleFiles。
+ * @param rootDir 显式指定项目根目录（测试用）
  */
-export function readAssFile(id: string, rootDir: string = process.cwd()): string | null {
-    const folderPath = path.join(rootDir, SUBTITLE_FILES_DIR, id);
+export function readAssFile(id: string, rootDir?: string): string | null {
+    const folderPath = path.join(getSubtitleFilesDir(rootDir), id);
     const candidates = listSubtitleFileCandidates(folderPath);
     if (candidates.length === 0) {
         return null;
@@ -244,28 +339,4 @@ export function readAssFile(id: string, rootDir: string = process.cwd()): string
     }
 
     return fallbackContent;
-}
-
-/**
- * 读取 public/fonts 下的字体文件列表。
- * @param rootDir 项目根目录，默认为 process.cwd()（测试可传临时目录）
- */
-export function getFontList(rootDir: string = process.cwd()): string[] {
-    const fontsDir = path.join(rootDir, 'public', 'fonts');
-
-    if (!fs.existsSync(fontsDir)) {
-        return [];
-    }
-
-    const files = fs.readdirSync(fontsDir);
-    return files.filter((file) => {
-        const ext = file.toLowerCase();
-        return (
-            ext.endsWith('.ttf') ||
-            ext.endsWith('.otf') ||
-            ext.endsWith('.ttc') ||
-            ext.endsWith('.woff') ||
-            ext.endsWith('.woff2')
-        );
-    });
 }

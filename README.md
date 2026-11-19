@@ -60,7 +60,7 @@
 - 1920×1080 全屏展示页面
 - 使用 [JavascriptSubtitlesOctopus](https://github.com/libass/JavascriptSubtitlesOctopus) 渲染 ASS 字幕
 - 支持大多数 SSA/ASS 功能（libass 所支持的一切）
-- 动态加载字体文件（TTF / OTF / TTC / WOFF / WOFF2）
+- 读取系统已安装字体（TTF / OTF / TTC），由服务端按需提供给 libass 渲染
 - Socket.io 事件驱动，内部计时器同步
 - 断线/页面刷新后自动向控制端请求补发状态，恢复当前字幕、字体与播放进度
 - 透明背景，适合 OBS 叠加
@@ -69,14 +69,16 @@
 
 - 基于 JSON 配置的预设条件筛选
 - 实时搜索过滤
-- 字体下拉：按具体字体文件读取 `public/fonts`，同族不同字重（Black/Thin 等）可区分；全局生效（切换歌曲后仍保持）
+- 字体下拉：读取系统已安装字体，可选「跟随原字幕」或强制使用某个系统字体；支持按族名/本地化名搜索字体；**全局生效**（切换歌曲后仍保持）
 - 颜色直接跟随 ASS 文件本身：展示端按 ASS 样式渲染，控制端不做颜色改写
 
 ### 字幕来源
 
-- 预制时间轴：读取 `subtitleFiles/<歌曲名>/` 目录，无需数据库或上传
+- 预制时间轴：优先读取编译产物中的 `.output/subtitleFiles/`；没有构建产物时才回退到项目根目录的 `subtitleFiles/`
 - 通用 ASS/SSA：任意 ASS/SSA 字幕直接放入即可使用；没有 `config.txt` 时自动从 `[Events]` 解析时间轴
 - LRC 生成器：`pnpm lrc2subtitle` 从 LRC 歌词一步生成可直接导入的字幕包；自动识别中/日/英语言，单文件内的双语对照会自动配对成原文 + 翻译
+
+> 运行时会优先使用 `.output/subtitleFiles`（即 `D:\rakirGitHubRepos\liveSubtitle\.output\subtitleFiles`）。`pnpm build` 重建 `.output` 时会自动备份并恢复 `.output/subtitleFiles`，发布用的字幕不会因为构建被删除；如果该目录不存在或为空，构建时会用项目根目录的 `subtitleFiles` 初始化。开发时如果 `.output` 已存在，根目录 `subtitleFiles` 的改动不会自动生效；可用环境变量 `SUBTITLE_FILES_DIR` 直接指定实际读取的字幕目录，或把字幕同步到 `.output/subtitleFiles`。
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
@@ -108,14 +110,14 @@ liveSubtitle_new/
 │   │   ├── subtitle-file/[id].get.ts # GET /api/subtitle-file/:id
 │   │   ├── subtitles/[id].get.ts    # GET /api/subtitles/:id
 │   │   ├── filter-config.get.ts     # GET /api/filter-config
-│   │   ├── fonts.get.ts             # GET /api/fonts
-│   │   ├── font-options.get.ts      # GET /api/font-options（字体族名）
+│   │   ├── font-options.get.ts      # GET /api/font-options（系统字体族名/别名）
+│   │   ├── font-file/[token].ts     # GET /api/font-file/:token（系统字体文件）
 │   │   └── health.get.ts            # GET /api/health
 │   ├── plugins/
 │   │   └── socket.ts        # Socket.io 事件 relay（Nitro plugin）
 │   └── utils/
 │       ├── ass.ts           # 通用 ASS/SSA 解析器（时间轴回退）
-│       ├── fonts.ts         # 字体元数据解析（字体族名）
+│       ├── fonts.ts         # 系统字体扫描/元数据解析/安全路径校验
 │       └── subtitle.ts      # 字幕数据读取工具
 ├── types/                   # TypeScript 类型定义
 │   └── subtitle.ts
@@ -127,7 +129,7 @@ liveSubtitle_new/
 │   └── keyboard.ts          # 键盘快捷键判断
 ├── public/                  # 静态资源
 │   ├── js/                  # JavascriptSubtitlesOctopus WASM
-│   └── fonts/               # 字体文件
+│   └── fonts/               # 历史字体文件（新版本不再读取，可自行删除）
 ├── assets/
 │   └── main.css             # 全局样式
 ├── shims/
@@ -220,8 +222,9 @@ pnpm lint
 - 下方字幕选择器：搜索/筛选/选择字幕文件
 - 选择文件后自动开始播放
 - 字幕颜色：直接跟随 ASS 文件中的样式颜色（控制端不再改色）
-- 字体下拉：从 `public/fonts` 按具体字体文件列出（同族字重带文件名区分），**全局生效**（切换歌曲后仍保持）；切换后焦点会自动离开下拉框，空格键仍用于播放/暂停
-- 字幕来源：把字幕目录（含任意 ASS/SSA 或 `config.txt`）放入 `subtitleFiles/` 后刷新页面即可，详见 [字幕文件格式](#字幕文件格式)
+- 字体下拉：读取系统已安装字体，可选「跟随原字幕」（使用 ASS 样式里的 Fontname）或强制使用某个系统字体；旁边的搜索框可按族名或本地化名筛选，回车直接选中第一款匹配字体；**全局生效**（切换歌曲后仍保持）；切换后焦点会自动离开下拉框，空格键仍用于播放/暂停
+- 字体不需要放进项目目录：展示端通过 `/api/font-file/:token` 只读取所选/ASS 引用到的系统字体文件，未安装的 ASS 字体将由系统回退字体兜底
+- 字幕来源：把字幕目录（含任意 ASS/SSA 或 `config.txt`）放入 `.output/subtitleFiles/` 后刷新页面即可；开发环境没有 `.output` 时回退到项目根目录的 `subtitleFiles/`，也可用 `SUBTITLE_FILES_DIR` 指定，详见 [字幕文件格式](#字幕文件格式)
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
@@ -310,15 +313,15 @@ subtitleFiles/
 
 所有端点均在 Nuxt Nitro 服务端，端口 3000。
 
-| 端点                         | 说明                      |
-| ---------------------------- | ------------------------- |
-| `GET /api/subtitles`         | 获取所有字幕文件列表      |
-| `GET /api/subtitles/:id`     | 获取单个字幕文件详情      |
-| `GET /api/subtitle-file/:id` | 获取原始 ASS 字幕文件内容 |
-| `GET /api/filter-config`     | 获取过滤器配置            |
-| `GET /api/fonts`             | 获取字体文件列表          |
-| `GET /api/font-options`      | 获取字体选项（字体族名）  |
-| `GET /api/health`            | 健康检查                  |
+| 端点                         | 说明                                                       |
+| ---------------------------- | ---------------------------------------------------------- |
+| `GET /api/subtitles`         | 获取所有字幕文件列表                                       |
+| `GET /api/subtitles/:id`     | 获取单个字幕文件详情                                       |
+| `GET /api/subtitle-file/:id` | 获取原始 ASS 字幕文件内容                                  |
+| `GET /api/filter-config`     | 获取过滤器配置                                             |
+| `GET /api/font-options`      | 获取系统字体选项（族名/别名）                              |
+| `GET /api/font-file/:token`  | 获取系统字体文件（仅允许系统字体目录内的 ttf/otf/ttc/otc） |
+| `GET /api/health`            | 健康检查                                                   |
 
 <p align="right">(<a href="#readme-top">回到顶端</a>)</p>
 
@@ -340,12 +343,18 @@ subtitleFiles/
 ### 目录结构
 
 ```
+# 运行时优先使用编译产物中的目录
+.output/
+└── subtitleFiles/
+    ├── filter-config.json      # 过滤器配置
+    └── 歌曲名/                 # 每个歌曲一个文件夹
+        ├── config.txt          # 时间轴配置（可选：缺省时自动从 ASS/SSA 的 [Events] 解析）
+        ├── subtitle.ass        # ASS/SSA 字幕文件（文件名任意，见下方通用支持）
+        └── lyrics.txt          # 原歌词文件（可选，不参与运行）
+
+# 没有 .output 时回退到项目根目录（也是字幕制作的源目录）
 subtitleFiles/
-├── filter-config.json      # 过滤器配置
-└── 歌曲名/                 # 每个歌曲一个文件夹
-    ├── config.txt          # 时间轴配置（可选：缺省时自动从 ASS/SSA 的 [Events] 解析）
-    ├── subtitle.ass        # ASS/SSA 字幕文件（文件名任意，见下方通用支持）
-    └── lyrics.txt          # 原歌词文件（可选，不参与运行）
+└── ...
 ```
 
 目录内的字幕文件按 `subtitle.ass` → 其它 `*.ass` → `*.ssa` 的顺序查找使用；`config.txt` 能解析出时间轴时优先使用它，否则回退到 ASS/SSA。
@@ -436,17 +445,28 @@ ASS 字幕样式命名规范：
 
 - `type` 可选值：`album`（专辑/单曲）、`unit`（小组）、`live`（演出）、`solo`（独唱）
 
-### 字体文件
+### 字体（系统字体）
 
-字体放置在 `public/fonts/` 目录，支持：`.ttf` `.otf` `.ttc` `.woff` `.woff2`
+字体不再从 `public/fonts` 读取，而是列出运行服务器的机器上**已安装的系统字体**：
 
-控制端的「字体」下拉会按具体字体文件读取其中 `.ttf` / `.otf` / `.ttc` 的字体信息（解析字体 `name` 表，TTC 取第一个字体），同族不同字重会附带文件名区分，无需额外配置；新增字体文件后刷新控制端即可选择。
+- Windows：`%WINDIR%\Fonts` 与 `%LOCALAPPDATA%\Microsoft\Windows\Fonts`
+- macOS：`/System/Library/Fonts`、`/System/Library/Fonts/Supplemental`、`/Library/Fonts`、`~/Library/Fonts`
+- Linux：`/usr/share/fonts`、`/usr/local/share/fonts`、`~/.local/share/fonts`、`~/.fonts`
 
-选择字体后，展示端**只加载该字体文件**再应用，因此 `HarmonyOS Sans SC Black` / `Thin` 这类同族字重可以真正切换出不同效果（如果只替换字体家族名，libass 无法区分同族字重）。未选择字体时，展示端按 ASS 样式实际引用的字体族名加载对应字体（同族只取一个文件）；匹配不到时只回退加载少量默认字体，避免一次加载 `public/fonts` 全部字体拖慢甚至拖垮渲染器。字体设置对展示端**全局生效**：切换字体后立即应用到当前字幕，切换歌曲也会保持；只改字体，不改颜色。
+控制端「字体」下拉有两个选择：
+
+- **跟随原字幕**（默认）：展示端解析 ASS 样式里的 `Fontname`（以及对话中的 `\fn` 行内覆盖），按族名、本地化族名、全名或 PostScript 名到系统字体列表中匹配并加载；同族只加载常规字重文件。
+- **强制使用某个系统字体**：把该字体族名写入所有 ASS 样式，并加载该族的常规/粗体/细体等文件，因此同族字重仍能生效。
+
+服务端只读取系统字体目录内的 `.ttf` / `.otf` / `.ttc` / `.otc`，通过 `/api/font-file/:token` 提供给展示端（路径必须位于上述字体目录内，无法读取任意文件）。字体列表按进程缓存 30 秒；新安装字体后最多等待 30 秒或重启服务即可看到。
+
+若 ASS 引用的字体未安装，展示端会加载几款常用 CJK 回退字体（Windows 上优先 Microsoft YaHei UI / Microsoft YaHei / Yu Gothic UI），避免画面完全无字。即使主字体已安装，展示端也会额外加载一款 CJK 回退字体：当主字体缺少个别汉字/假名时，libass 会自动回退到该字体，避免出现豆腐块（例如 Yu Gothic UI 缺少部分简体字）。需要精确还原时，安装对应字体或在控制端强制选择一款系统字体。
+
+`public/fonts/` 中的历史字体文件已不再参与读取，可以自行删除。
 
 切换字体/筛选等设置后控制端会自动移走焦点，避免空格键被下拉框吃掉——之后直接按空格仍然是播放/暂停。
 
-展示端加载字体会先逐个校验文件是否可访问：无法访问的字体自动跳过，避免个别字体缺失导致整个字幕渲染器报错、画面空白；字体列表接口已禁用缓存。若 OBS 浏览器来源仍在使用旧页面或旧字体列表，请在来源属性中点击「刷新当前页面的缓存」后重试。
+展示端加载字体会先逐个校验文件是否可访问：无法访问的字体自动跳过，避免个别字体缺失导致整个字幕渲染器报错、画面空白；字体列表接口已禁用缓存。若 OBS 浏览器来源仍在使用旧页面，请在来源属性中点击「刷新当前页面的缓存」后重试。
 
 ### 颜色
 

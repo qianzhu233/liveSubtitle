@@ -1,22 +1,18 @@
-// 动态加载字体文件
+import type { FontOption } from '~/types/subtitle';
+
+// 动态加载系统字体文件
 //
-// 展示端会按需加载字体：
-// - 控制端选了具体字体文件时，只加载该文件，避免同族不同字重互相覆盖（Black/Thin 等才能生效）；
-// - 未选字体时，按 ASS 样式实际引用的字体族名加载对应字体文件；
-// - 匹配不到时回退为加载 public/fonts 下的全部字体。
+// 展示端无法直接使用操作系统的字体，必须由服务端把系统字体文件读出来，
+// 再交给 libass（JavascriptSubtitlesOctopus）：
+// - 控制端强制指定了系统字体时，只加载该字体族的文件（含同族字重）；
+// - 控制端选择「跟随原字幕」时，按 ASS 样式实际引用的 Fontname / \fn 标签，
+//   在系统字体列表中按族名/本地化名/全名匹配后加载；
+// - 无论选中/匹配到哪款字体，都额外加载一款系统 CJK 回退字体：
+//   主字体缺少个别汉字/假名时 libass 会自动回退，避免出现豆腐块。
 // 加载前还会逐个 HEAD 校验，跳过无法访问的字体，避免个别字体 404 拖垮整个字幕渲染器。
-const FONT_FILE_PATTERN = /\.(ttf|otf|ttc|woff2?)$/i;
 
-/** 回退时优先加载的项目默认字体（比一次加载 public/fonts 全部字体轻得多） */
-const PREFERRED_FALLBACK_FILES = ['FZFWZhuZiAYuanJWB.TTF', 'TsukushiAMaruGothic.ttc'];
-/** 回退时最多加载的字体数量 */
-const MAX_FALLBACK_FONTS = 2;
-
-interface FontOption {
-    fileName: string;
-    familyName: string;
-    url: string;
-}
+/** 客户端缓存的系统字体列表，避免每次重建渲染器都重新拉取 */
+let fontOptionsCache: FontOption[] | null = null;
 
 async function isFontAvailable(url: string): Promise<boolean> {
     try {
@@ -28,16 +24,41 @@ async function isFontAvailable(url: string): Promise<boolean> {
 }
 
 async function fetchFontOptions(): Promise<FontOption[]> {
+    if (fontOptionsCache) {
+        return fontOptionsCache;
+    }
+
     try {
         const response = await fetch('/api/font-options', { cache: 'no-store' });
         if (!response.ok) return [];
-        return (await response.json()) as FontOption[];
+        const data = (await response.json()) as FontOption[];
+        if (!Array.isArray(data)) return [];
+        fontOptionsCache = data;
+        return data;
     } catch {
         return [];
     }
 }
 
-/** 按 Format 行解析 ASS 样式实际引用的 Fontname 列表 */
+/** 清除字体列表缓存（系统字体变化后可由调用方触发） */
+export function clearFontOptionsCache(): void {
+    fontOptionsCache = null;
+}
+
+/** 归一化 ASS Fontname：去掉竖排前缀 @、首尾空白并忽略大小写 */
+function normalizeFontName(name: string): string {
+    return name.trim().replace(/^@+/, '').toLowerCase();
+}
+
+function getOptionNames(option: FontOption): string[] {
+    return [option.familyName, ...(option.aliases ?? [])];
+}
+
+function optionMatches(option: FontOption, normalizedNames: Set<string>): boolean {
+    return getOptionNames(option).some((name) => normalizedNames.has(normalizeFontName(name)));
+}
+
+/** 按 Format 行解析 ASS 样式实际引用的 Fontname，并补充对话中的 \fn 覆盖 */
 function extractAssFontNames(assContent: string): string[] {
     if (!assContent) return [];
 
@@ -82,76 +103,127 @@ function extractAssFontNames(assContent: string): string[] {
         }
     }
 
+    // 行内覆盖标签（如 {\fnMicrosoft YaHei}）同样会请求系统字体
+    for (const match of assContent.matchAll(/\\fn([^\\}]+)/gi)) {
+        const fontName = match[1]?.trim();
+        if (fontName) {
+            names.add(fontName);
+        }
+    }
+
     return [...names];
 }
 
+function uniqueUrls(urls: string[]): string[] {
+    return [...new Set(urls.filter((url) => typeof url === 'string' && url.length > 0))];
+}
+
+async function filterAvailableFonts(urls: string[]): Promise<string[]> {
+    const unique = uniqueUrls(urls);
+    const availability = await Promise.all(
+        unique.map(async (url) => ((await isFontAvailable(url)) ? url : null)),
+    );
+    const availableFonts = availability.filter((url): url is string => url !== null);
+
+    const missingCount = unique.length - availableFonts.length;
+    if (missingCount > 0) {
+        console.warn(`有 ${missingCount} 个字体文件无法访问，已跳过这些字体`);
+    }
+
+    return availableFonts;
+}
+
+function getOptionUrls(option: FontOption): string[] {
+    const urls = uniqueUrls(option.urls ?? []);
+    if (urls.length > 0) {
+        return urls;
+    }
+    return uniqueUrls([option.url]);
+}
+
+/**
+ * 始终额外加载一款系统 CJK 回退字体。
+ * 选中/ASS 指定的字体可能缺少个别汉字或假名（例如 Yu Gothic UI 缺少部分简体字），
+ * 只加载它时 libass 找不到字形就会画豆腐块；把常用 CJK 字体也放进字体列表，
+ * libass 会只在主字体缺字时回退到它。
+ */
+function getFallbackUrls(fontOptions: FontOption[]): string[] {
+    if (fontOptions.length === 0) {
+        return [];
+    }
+
+    const marked = fontOptions.filter((option) => option.fallback);
+    const candidates = marked.length > 0 ? marked : fontOptions.slice(0, 1);
+
+    for (const option of candidates) {
+        const primaryUrl = getOptionUrls(option)[0];
+        if (primaryUrl) {
+            return [primaryUrl];
+        }
+    }
+
+    return [];
+}
+
 export interface LoadFontsOptions {
-    /** 控制端选中的具体字体文件 URL；非空时只加载该文件 */
-    selectedFontUrl?: string;
-    /** 当前 ASS 内容，用于按样式引用的字体族名匹配需要加载的字体文件 */
+    /** 控制端强制指定的系统字体文件 URL（可含同族多个字重）；非空时优先加载这些文件 */
+    selectedFontUrls?: string[];
+    /** 当前 ASS 内容，用于按样式引用的字体族名匹配需要加载的系统字体 */
     assContent?: string;
 }
 
 export async function loadFonts(options: LoadFontsOptions = {}): Promise<string[]> {
     try {
-        let fontPaths: string[] = [];
+        const fontOptions = await fetchFontOptions();
+        const fallbackUrls = getFallbackUrls(fontOptions);
+        const selectedUrls = uniqueUrls(options.selectedFontUrls ?? []);
 
-        if (options.selectedFontUrl) {
-            fontPaths = [options.selectedFontUrl];
-        } else {
-            const assFontNames = extractAssFontNames(options.assContent ?? '');
-            if (assFontNames.length > 0) {
-                const fontOptions = await fetchFontOptions();
-                const normalizedNames = assFontNames.map((name) => name.toLowerCase());
-                // 同族字体只取一个文件：ASS 的风格字体通常是一个家族，
-                // 全部加载同族字重会白白拉取几十上百 MB（还可能拖慢/拖垮渲染器）
-                const seenFamilies = new Set<string>();
-                for (const option of fontOptions) {
-                    const family = option.familyName.trim().toLowerCase();
-                    if (!normalizedNames.includes(family) || seenFamilies.has(family)) {
-                        continue;
-                    }
-                    seenFamilies.add(family);
-                    fontPaths.push(option.url);
+        if (selectedUrls.length > 0) {
+            const availableFonts = await filterAvailableFonts([...selectedUrls, ...fallbackUrls]);
+            if (selectedUrls.some((url) => availableFonts.includes(url))) {
+                return availableFonts;
+            }
+            // 选中的字体文件都不可用时，回退为按 ASS 引用匹配，避免字幕彻底没有字体
+        }
+
+        if (fontOptions.length === 0) {
+            return [];
+        }
+
+        const assFontNames = extractAssFontNames(options.assContent ?? '');
+        const matchedUrls: string[] = [];
+
+        if (assFontNames.length > 0) {
+            const normalizedNames = new Set(assFontNames.map(normalizeFontName));
+            const matchedFamilies = new Set<string>();
+
+            for (const option of fontOptions) {
+                const familyKey = option.familyName.trim().toLowerCase();
+                if (matchedFamilies.has(familyKey) || !optionMatches(option, normalizedNames)) {
+                    continue;
+                }
+                matchedFamilies.add(familyKey);
+                // 跟随原字幕时同族只取主文件：同时加载中日文字体的全部字重会拉取上百 MB
+                const primaryUrl = getOptionUrls(option)[0];
+                if (primaryUrl) {
+                    matchedUrls.push(primaryUrl);
                 }
             }
+        }
 
-            if (fontPaths.length === 0) {
-                const response = await fetch('/api/fonts', { cache: 'no-store' });
-                if (!response.ok) {
-                    console.error('获取字体列表失败:', response.status);
-                    return [];
-                }
-                const fonts = (await response.json()) as string[];
-                const fontFiles = fonts.filter((font) => FONT_FILE_PATTERN.test(font));
-                const preferredFiles = PREFERRED_FALLBACK_FILES.filter((fileName) =>
-                    fontFiles.includes(fileName),
-                );
-                const fallbackFiles =
-                    preferredFiles.length > 0
-                        ? preferredFiles
-                        : fontFiles.slice(0, MAX_FALLBACK_FONTS);
-                console.log('使用回退字体:', fallbackFiles);
-                fontPaths = fallbackFiles.map((font) => `/fonts/${font}`);
+        if (matchedUrls.length > 0) {
+            const availableFonts = await filterAvailableFonts([...matchedUrls, ...fallbackUrls]);
+            if (matchedUrls.some((url) => availableFonts.includes(url))) {
+                return availableFonts;
             }
         }
 
-        const availability = await Promise.all(
-            fontPaths.map(async (url) => ((await isFontAvailable(url)) ? url : null)),
-        );
-        const availableFonts = availability.filter((url): url is string => url !== null);
-
-        const missingCount = fontPaths.length - availableFonts.length;
-        if (missingCount > 0) {
-            console.warn(`有 ${missingCount} 个字体文件无法访问，已跳过这些字体`);
+        // ASS 字体缺失或对应文件不可访问时，只加载回退字体
+        if (fallbackUrls.length > 0) {
+            console.log('使用系统回退字体');
         }
 
-        // 选中的字体文件不可用时，回退为按 ASS 引用/全部字体加载，避免字幕彻底没有字体
-        if (options.selectedFontUrl && availableFonts.length === 0) {
-            return loadFonts({ assContent: options.assContent });
-        }
-
-        return availableFonts;
+        return filterAvailableFonts(fallbackUrls);
     } catch (error) {
         console.error('加载字体失败:', error);
         return [];

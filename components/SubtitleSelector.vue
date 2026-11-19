@@ -35,15 +35,31 @@
 
             <div class="font-selector">
                 <label class="font-label">字体:</label>
-                <select v-model="store.selectedFont" @change="handleFontChange" class="font-select">
-                    <option value="">默认（原样式）</option>
-                    <option
-                        v-for="font in store.fontOptions"
-                        :key="font.fileName"
-                        :value="font.fileName"
-                    >
-                        {{ getFontOptionLabel(font) }}
-                    </option>
+                <input
+                    v-model="fontSearchText"
+                    type="search"
+                    class="font-search-input"
+                    placeholder="搜索字体..."
+                    aria-label="搜索字体"
+                    title="按字体族名或本地化名称搜索系统字体"
+                    @keydown.enter.prevent="selectFirstFilteredFont"
+                />
+                <select
+                    v-model="store.selectedFont"
+                    @change="handleFontChange"
+                    class="font-select"
+                    title="列出系统已安装字体；选择「跟随原字幕」时使用 ASS 样式指定的字体"
+                >
+                    <option value="">跟随原字幕</option>
+                    <optgroup :label="fontSearchText.trim() ? '匹配的系统字体' : '系统字体'">
+                        <option
+                            v-for="font in filteredFontOptions"
+                            :key="font.familyName"
+                            :value="font.familyName"
+                        >
+                            {{ font.familyName }}
+                        </option>
+                    </optgroup>
                 </select>
             </div>
         </div>
@@ -106,13 +122,36 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useSubtitleStore } from '~/stores/subtitle';
-import type { FontOption, SubtitleFile } from '~/types/subtitle';
+import type { SubtitleFile } from '~/types/subtitle';
 
 const store = useSubtitleStore();
 
 const currentPreset = ref('all');
 const selectedFilterType = ref('');
 const searchText = ref('');
+const fontSearchText = ref('');
+
+const filteredFontOptions = computed(() => {
+    const query = fontSearchText.value.trim().toLowerCase();
+    if (!query) {
+        return store.fontOptions;
+    }
+
+    const matched = store.fontOptions.filter((font) => {
+        if (font.familyName.toLowerCase().includes(query)) {
+            return true;
+        }
+        return (font.aliases ?? []).some((alias) => alias.toLowerCase().includes(query));
+    });
+
+    // 搜索时保留当前选中的字体，避免下拉框因选项被过滤而显示为空
+    const selected = store.selectedFontOption;
+    if (selected && !matched.includes(selected)) {
+        matched.push(selected);
+    }
+
+    return matched;
+});
 
 const filteredFilters = computed(() => {
     let filters = store.filters;
@@ -183,15 +222,15 @@ const handleFontChange = () => {
     blurActiveControl();
 };
 
-const getFontOptionLabel = (font: FontOption): string => {
-    const duplicateCount = store.fontOptions.filter(
-        (option) => option.familyName === font.familyName,
-    ).length;
-    if (duplicateCount <= 1) {
-        return font.familyName;
+// 搜索框回车：直接选中当前筛选结果里的第一款字体
+const selectFirstFilteredFont = () => {
+    const first = filteredFontOptions.value[0];
+    if (!first) {
+        return;
     }
-    // 同族多字重时带上文件名，方便区分 Black/Thin 等具体字重
-    return `${font.familyName}（${font.fileName.replace(/\.[^.]+$/, '')}）`;
+    store.selectedFont = first.familyName;
+    store.broadcastFontChange();
+    blurActiveControl();
 };
 
 const getPreviewText = (file: SubtitleFile): string => {
@@ -290,6 +329,20 @@ onMounted(async () => {
     align-items: center;
     gap: 6px;
     margin-bottom: 8px;
+}
+
+.font-search-input {
+    width: 100px;
+    height: 24.5px;
+    padding: 3px 6px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 12px;
+    outline: none;
+}
+
+.font-search-input:focus {
+    border-color: #3b82f6;
 }
 
 .font-label {

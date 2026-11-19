@@ -33,19 +33,30 @@ const testFile: SubtitleFile = {
 
 const FONT_OPTIONS: FontOption[] = [
     {
-        fileName: 'FZFWZhuZiAYuanJWB.TTF',
         familyName: 'FZFW ZhuZi A YuanS',
-        url: '/fonts/FZFWZhuZiAYuanJWB.TTF',
+        fileName: 'FZFWZhuZiAYuanJWB.TTF',
+        url: '/api/font-file/fzfw',
+        urls: ['/api/font-file/fzfw'],
+        aliases: ['FZFW ZhuZi A YuanS', 'FZFWZhuZiAYuanJWB'],
     },
     {
-        fileName: 'HarmonyOS_Sans_SC_Black.ttf',
         familyName: 'HarmonyOS Sans SC',
-        url: '/fonts/HarmonyOS_Sans_SC_Black.ttf',
+        fileName: 'HarmonyOS_Sans_SC_Regular.ttf',
+        url: '/api/font-file/harmony-regular',
+        urls: [
+            '/api/font-file/harmony-regular',
+            '/api/font-file/harmony-bold',
+            '/api/font-file/harmony-thin',
+        ],
+        aliases: ['HarmonyOS Sans SC', 'HarmonyOS Sans SC Regular'],
     },
     {
-        fileName: 'HarmonyOS_Sans_SC_Thin.ttf',
-        familyName: 'HarmonyOS Sans SC',
-        url: '/fonts/HarmonyOS_Sans_SC_Thin.ttf',
+        familyName: 'Microsoft YaHei',
+        fileName: 'msyh.ttc',
+        url: '/api/font-file/msyh',
+        urls: ['/api/font-file/msyh', '/api/font-file/msyhbd'],
+        aliases: ['Microsoft YaHei', '微软雅黑'],
+        fallback: true,
     },
 ];
 
@@ -151,7 +162,7 @@ describe('SubtitleSelector 颜色与字体', () => {
         expect(wrapper!.text()).toContain('跟随 ASS 本身');
     });
 
-    it('字体下拉按具体字体文件列出，同族不同字重可区分', () => {
+    it('字体下拉列出系统字体族，并保留「跟随原字幕」选项', () => {
         const store = useSubtitleStore(pinia);
 
         expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/font-options')).toBe(
@@ -164,22 +175,21 @@ describe('SubtitleSelector 颜色与字体', () => {
         expect(fontSelect.exists()).toBe(true);
 
         const optionTexts = fontSelect.findAll('option').map((option) => option.text());
-        expect(optionTexts[0]).toBe('默认（原样式）');
+        expect(optionTexts[0]).toBe('跟随原字幕');
         expect(optionTexts).toContain('FZFW ZhuZi A YuanS');
-        // 同族多字重时 label 带文件名，避免同名选项无法区分
-        expect(optionTexts).toContain('HarmonyOS Sans SC（HarmonyOS_Sans_SC_Black）');
-        expect(optionTexts).toContain('HarmonyOS Sans SC（HarmonyOS_Sans_SC_Thin）');
+        expect(optionTexts).toContain('HarmonyOS Sans SC');
+        expect(optionTexts).toContain('Microsoft YaHei');
 
         const optionValues = fontSelect
             .findAll('option')
             .map((option) => (option.element as HTMLOptionElement).value);
-        expect(optionValues).toContain('HarmonyOS_Sans_SC_Black.ttf');
-        expect(optionValues).toContain('HarmonyOS_Sans_SC_Thin.ttf');
+        expect(optionValues).toContain('HarmonyOS Sans SC');
+        expect(optionValues).toContain('Microsoft YaHei');
     });
 
-    it('选择文件时携带当前全局字体文件（ASS 由展示端自行拉取）', async () => {
+    it('选择文件时携带当前全局字体（ASS 由展示端自行拉取）', async () => {
         const store = useSubtitleStore(pinia);
-        store.selectedFont = 'HarmonyOS_Sans_SC_Thin.ttf';
+        store.selectedFont = 'HarmonyOS Sans SC';
         socketMock.emit.mockClear();
 
         store.selectFile(testFile);
@@ -190,9 +200,14 @@ describe('SubtitleSelector 颜色与字体', () => {
         expect(fileSelectedCalls).toHaveLength(1);
         expect(fileSelectedCalls[0]![1]).toMatchObject({
             file: testFile,
-            fontFile: 'HarmonyOS_Sans_SC_Thin.ttf',
+            fontFile: 'HarmonyOS_Sans_SC_Regular.ttf',
             fontFamily: 'HarmonyOS Sans SC',
-            fontUrl: '/fonts/HarmonyOS_Sans_SC_Thin.ttf',
+            fontUrl: '/api/font-file/harmony-regular',
+            fontUrls: [
+                '/api/font-file/harmony-regular',
+                '/api/font-file/harmony-bold',
+                '/api/font-file/harmony-thin',
+            ],
         });
 
         const assUpdateCalls = emitCalls('ass-content-update');
@@ -224,7 +239,7 @@ describe('SubtitleSelector 颜色与字体', () => {
 });
 
 describe('SubtitleSelector 字体全局切换', () => {
-    it('修改字体下拉后发出 font-change 事件（含具体字体文件），并移走焦点', async () => {
+    it('修改字体下拉后发出 font-change 事件（含系统字体文件），并移走焦点', async () => {
         const store = useSubtitleStore(pinia);
         socketMock.emit.mockClear();
 
@@ -232,15 +247,20 @@ describe('SubtitleSelector 字体全局切换', () => {
         (fontSelect.element as HTMLSelectElement).focus();
         expect(document.activeElement).toBe(fontSelect.element);
 
-        await fontSelect.setValue('HarmonyOS_Sans_SC_Black.ttf');
+        await fontSelect.setValue('HarmonyOS Sans SC');
         await flushAll();
 
-        expect(store.selectedFont).toBe('HarmonyOS_Sans_SC_Black.ttf');
+        expect(store.selectedFont).toBe('HarmonyOS Sans SC');
         expect(emitCalls('font-change')).toHaveLength(1);
         expect(emitCalls('font-change')[0]![1]).toEqual({
-            fontFile: 'HarmonyOS_Sans_SC_Black.ttf',
+            fontFile: 'HarmonyOS_Sans_SC_Regular.ttf',
             fontFamily: 'HarmonyOS Sans SC',
-            fontUrl: '/fonts/HarmonyOS_Sans_SC_Black.ttf',
+            fontUrl: '/api/font-file/harmony-regular',
+            fontUrls: [
+                '/api/font-file/harmony-regular',
+                '/api/font-file/harmony-bold',
+                '/api/font-file/harmony-thin',
+            ],
         });
         // 字体由展示端全局应用，切换字体时不需要重新发送 ASS
         expect(emitCalls('ass-content-update')).toHaveLength(0);
@@ -248,30 +268,65 @@ describe('SubtitleSelector 字体全局切换', () => {
         expect((document.activeElement as HTMLElement | null)?.tagName).toBe('BODY');
     });
 
-    it('同族不同字重切换时下发不同的字体文件，而不是只换家族名', async () => {
+    it('切换不同系统字体时下发对应的字体族与全部字重文件', async () => {
         const fontSelect = wrapper!.find('select.font-select');
 
-        await fontSelect.setValue('HarmonyOS_Sans_SC_Black.ttf');
+        await fontSelect.setValue('FZFW ZhuZi A YuanS');
         await flushAll();
-        const blackPayload = emitCalls('font-change').at(-1)![1] as Record<string, string>;
+        const fzfwPayload = emitCalls('font-change').at(-1)![1] as Record<string, unknown>;
 
         socketMock.emit.mockClear();
-        await fontSelect.setValue('HarmonyOS_Sans_SC_Thin.ttf');
+        await fontSelect.setValue('HarmonyOS Sans SC');
         await flushAll();
-        const thinPayload = emitCalls('font-change').at(-1)![1] as Record<string, string>;
+        const harmonyPayload = emitCalls('font-change').at(-1)![1] as Record<string, unknown>;
 
-        // 家族名相同，但字体文件/URL 不同，展示端据此只加载对应字重
-        expect(blackPayload.fontFamily).toBe('HarmonyOS Sans SC');
-        expect(thinPayload.fontFamily).toBe('HarmonyOS Sans SC');
-        expect(blackPayload.fontUrl).toBe('/fonts/HarmonyOS_Sans_SC_Black.ttf');
-        expect(thinPayload.fontUrl).toBe('/fonts/HarmonyOS_Sans_SC_Thin.ttf');
+        expect(fzfwPayload.fontFamily).toBe('FZFW ZhuZi A YuanS');
+        expect(fzfwPayload.fontUrls).toEqual(['/api/font-file/fzfw']);
+        expect(harmonyPayload.fontFamily).toBe('HarmonyOS Sans SC');
+        expect(harmonyPayload.fontUrls).toEqual([
+            '/api/font-file/harmony-regular',
+            '/api/font-file/harmony-bold',
+            '/api/font-file/harmony-thin',
+        ]);
     });
 
-    it('切回「默认（原样式）」时发出空字体事件', async () => {
+    it('字体搜索支持族名与本地化别名，并保留当前选中项', async () => {
+        const store = useSubtitleStore(pinia);
+        const searchInput = wrapper!.find('input.font-search-input');
+        const optionTexts = () =>
+            wrapper!
+                .find('select.font-select')
+                .findAll('option')
+                .map((option) => option.text());
+
+        expect(searchInput.exists()).toBe(true);
+
+        await searchInput.setValue('微软');
+        expect(optionTexts()).toContain('Microsoft YaHei');
+        expect(optionTexts()).not.toContain('HarmonyOS Sans SC');
+
+        // 当前选中的字体即使不匹配搜索词也保留，避免下拉框显示为空
+        store.selectedFont = 'FZFW ZhuZi A YuanS';
+        await flushAll();
+        expect(optionTexts()).toContain('FZFW ZhuZi A YuanS');
+
+        await searchInput.setValue('harmony');
+        socketMock.emit.mockClear();
+        expect(optionTexts()).toContain('HarmonyOS Sans SC');
+        expect(optionTexts()).not.toContain('Microsoft YaHei');
+
+        // 回车直接选中筛选结果里的第一款字体
+        await searchInput.trigger('keydown.enter');
+        await flushAll();
+        expect(store.selectedFont).toBe('HarmonyOS Sans SC');
+        expect(emitCalls('font-change')).toHaveLength(1);
+    });
+
+    it('切回「跟随原字幕」时发出空字体事件', async () => {
         const store = useSubtitleStore(pinia);
         const fontSelect = wrapper!.find('select.font-select');
 
-        await fontSelect.setValue('HarmonyOS_Sans_SC_Black.ttf');
+        await fontSelect.setValue('HarmonyOS Sans SC');
         await flushAll();
         socketMock.emit.mockClear();
 
@@ -284,6 +339,7 @@ describe('SubtitleSelector 字体全局切换', () => {
             fontFile: '',
             fontFamily: '',
             fontUrl: '',
+            fontUrls: [],
         });
     });
 });

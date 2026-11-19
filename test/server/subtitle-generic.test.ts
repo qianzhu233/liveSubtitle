@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import {
-    getFontList,
     readAllSubtitleFiles,
     readAssFile,
     readFilterConfig,
+    resolveSubtitleFilesDir,
 } from '../../server/utils/subtitle';
 
 const V4_PLUS_HEADER = `[Script Info]
@@ -393,20 +393,58 @@ describe('其它工具函数的 rootDir 参数', () => {
         expect(readFilterConfig(rootDir)).toEqual([]);
     });
 
-    it('getFontList 从指定根目录读取字体文件', () => {
-        writeFixture('public/fonts/a.ttf', '');
-        writeFixture('public/fonts/b.otf', '');
-        writeFixture('public/fonts/c.txt', '');
-        writeFixture('public/fonts/d.woff2', '');
+    it('优先解析编译产物下的 .output/subtitleFiles', () => {
+        const projectDir = path.join(rootDir, 'project');
+        const outputSubtitles = path.join(projectDir, '.output', 'subtitleFiles');
+        fs.mkdirSync(outputSubtitles, { recursive: true });
 
-        const fonts = getFontList(rootDir).sort();
-        expect(fonts).toEqual(['a.ttf', 'b.otf', 'd.woff2']);
+        expect(
+            resolveSubtitleFilesDir({ cwd: projectDir, moduleDir: projectDir, entryPath: '' }),
+        ).toBe(outputSubtitles);
+
+        // 服务从其它 cwd 启动时，仍能按服务端模块位置找到 .output/subtitleFiles
+        const elsewhere = path.join(rootDir, 'elsewhere');
+        fs.mkdirSync(elsewhere, { recursive: true });
+        expect(
+            resolveSubtitleFilesDir({
+                cwd: elsewhere,
+                moduleDir: path.join(projectDir, 'server', 'chunks'),
+                entryPath: '',
+            }),
+        ).toBe(outputSubtitles);
+
+        // 直接从 .output 内启动
+        expect(
+            resolveSubtitleFilesDir({
+                cwd: path.join(projectDir, '.output'),
+                moduleDir: '',
+                entryPath: '',
+            }),
+        ).toBe(outputSubtitles);
+
+        // 没有编译产物时回退到 <cwd>/subtitleFiles
+        const plainDir = path.join(rootDir, 'plain');
+        fs.mkdirSync(plainDir, { recursive: true });
+        expect(resolveSubtitleFilesDir({ cwd: plainDir, moduleDir: plainDir, entryPath: '' })).toBe(
+            path.join(plainDir, 'subtitleFiles'),
+        );
+
+        // 环境变量可覆盖
+        const customDir = path.join(rootDir, 'custom-subtitles');
+        fs.mkdirSync(customDir, { recursive: true });
+        expect(
+            resolveSubtitleFilesDir({
+                cwd: plainDir,
+                moduleDir: plainDir,
+                entryPath: '',
+                envDir: customDir,
+            }),
+        ).toBe(customDir);
     });
 
-    it('不传 rootDir 时保持以 process.cwd() 为根的兼容行为', () => {
+    it('不传 rootDir 时解析编译产物字幕目录', () => {
         expect(Array.isArray(readAllSubtitleFiles())).toBe(true);
         expect(Array.isArray(readFilterConfig())).toBe(true);
-        expect(Array.isArray(getFontList())).toBe(true);
         expect(readAssFile('non-existing-song-for-compat')).toBeNull();
     });
 });

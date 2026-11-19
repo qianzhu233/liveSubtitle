@@ -18,9 +18,9 @@ const isPlaying = ref(false);
 const selectedFile = ref<SubtitleFile | null>(null);
 
 // 字体为展示端的全局设置：切换歌曲、更新 ASS 内容时都统一应用
-// fontUrl 指向具体字体文件，保证同族不同字重（Black/Thin 等）能真正切换
+// fontUrls 指向系统字体文件（同族可能有多个字重），由服务端 /api/font-file 提供
 const fontFamily = ref('');
-const fontUrl = ref('');
+const fontUrls = ref<string[]>([]);
 let currentAssContent = '';
 let rendererRequestId = 0;
 
@@ -32,6 +32,22 @@ let internalTimer: number | null = null;
 
 const applyCurrentFont = (assContent: string): string =>
     fontFamily.value ? applyAssFont(assContent, fontFamily.value) : assContent;
+
+/** 兼容旧负载：优先读 fontUrls，其次退回单个 fontUrl */
+const readFontUrls = (data: any): string[] => {
+    if (Array.isArray(data?.fontUrls)) {
+        const urls = data.fontUrls.filter(
+            (url: unknown): url is string => typeof url === 'string' && url.length > 0,
+        );
+        if (urls.length > 0) {
+            return urls;
+        }
+    }
+    if (typeof data?.fontUrl === 'string' && data.fontUrl) {
+        return [data.fontUrl];
+    }
+    return [];
+};
 
 const initSocketListeners = () => {
     socket.on('connect', () => {
@@ -73,7 +89,7 @@ const initSocketListeners = () => {
     socket.on('font-change', (data: any) => {
         console.log('收到字体变化:', data);
         fontFamily.value = String(data?.fontFamily ?? '');
-        fontUrl.value = String(data?.fontUrl ?? '');
+        fontUrls.value = readFontUrls(data);
         reinitWithCurrentContent();
     });
 
@@ -88,9 +104,7 @@ const initSocketListeners = () => {
         if (typeof data.fontFamily === 'string') {
             fontFamily.value = data.fontFamily;
         }
-        if (typeof data.fontUrl === 'string') {
-            fontUrl.value = data.fontUrl;
-        }
+        fontUrls.value = readFontUrls(data);
         loadSubtitleFile(data.file);
     });
 
@@ -146,7 +160,7 @@ const initSubtitleRenderers = async (assContent: string): Promise<void> => {
                 canvas.value.height = 1080;
             }
 
-            loadFonts({ selectedFontUrl: fontUrl.value, assContent })
+            loadFonts({ selectedFontUrls: fontUrls.value, assContent })
                 .then((fonts) => {
                     if (requestId !== rendererRequestId) {
                         // 已有更新的渲染请求，丢弃本次过期结果

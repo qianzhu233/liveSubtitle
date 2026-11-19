@@ -42,9 +42,18 @@ export interface Filter {
 // 筛选配置类型
 export type FilterConfig = Filter[];
 
-// 字体选项类型（由服务端解析 public/fonts 得到）
+// 字体选项类型（由服务端枚举系统已安装字体得到）
 export interface FontOption {
-    fileName: string;
+    /** 展示用字体族名，优先英文名 */
     familyName: string;
+    /** 主字体文件名（常规字重），仅用于展示/调试 */
+    fileName: string;
+    /** 主字体文件访问地址 */
     url: string;
+    /** 同族字体文件（常规/粗体/细体等），展示端强制字体时会全部加载 */
+    urls: string[];
+    /** 本地化族名、全名、PostScript 名，用于匹配 ASS Fontname */
+    aliases: string[];
+    /** ASS 指定字体缺失时是否作为回退字体 */
+    fallback?: boolean;
 }

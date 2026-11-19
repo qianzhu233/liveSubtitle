@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { loadFonts } from '../../utils/fontLoader';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { clearFontOptionsCache, loadFonts } from '../../utils/fontLoader';
 
 const jsonResponse = (data: unknown, ok = true) =>
     ({ ok, status: ok ? 200 : 500, json: async () => data }) as Response;
@@ -15,19 +15,26 @@ function silenceConsole() {
 
 const FONT_OPTIONS = [
     {
-        fileName: 'FZFWZhuZiAYuanJWB.TTF',
-        familyName: 'FZFW ZhuZi A YuanS',
-        url: '/fonts/FZFWZhuZiAYuanJWB.TTF',
+        familyName: 'HarmonyOS Sans SC',
+        fileName: 'HarmonyOS_Sans_SC_Regular.ttf',
+        url: '/api/font-file/harmony-regular',
+        urls: ['/api/font-file/harmony-regular', '/api/font-file/harmony-bold'],
+        aliases: ['HarmonyOS Sans SC', 'HarmonyOS Sans SC Regular', 'HarmonyOSSansSC'],
     },
     {
-        fileName: 'HarmonyOS_Sans_SC_Black.ttf',
-        familyName: 'HarmonyOS Sans SC',
-        url: '/fonts/HarmonyOS_Sans_SC_Black.ttf',
+        familyName: 'Microsoft YaHei',
+        fileName: 'msyh.ttc',
+        url: '/api/font-file/msyh',
+        urls: ['/api/font-file/msyh', '/api/font-file/msyhbd'],
+        aliases: ['Microsoft YaHei', '微软雅黑'],
+        fallback: true,
     },
     {
-        fileName: 'HarmonyOS_Sans_SC_Thin.ttf',
-        familyName: 'HarmonyOS Sans SC',
-        url: '/fonts/HarmonyOS_Sans_SC_Thin.ttf',
+        familyName: 'Arial Narrow',
+        fileName: 'ARIALN.TTF',
+        url: '/api/font-file/arialn',
+        urls: ['/api/font-file/arialn'],
+        aliases: ['Arial Narrow', 'ArialNarrow'],
     },
 ];
 
@@ -43,31 +50,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,测试
 `;
 
+beforeEach(() => {
+    clearFontOptionsCache();
+});
+
 afterEach(() => {
+    clearFontOptionsCache();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
 });
 
 describe('loadFonts 基本容错', () => {
-    it('只返回可访问的字体文件，跳过 404 字体与非字体文件', async () => {
+    it('只返回可访问的字体文件，跳过 404 字体', async () => {
         silenceConsole();
-        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
             const url = String(input);
-            if (url === '/api/fonts') {
-                expect(init?.cache).toBe('no-store');
-                return jsonResponse(['ok.ttf', 'missing.otf', 'readme.txt']);
-            }
-            if (url === '/fonts/ok.ttf') {
+            if (url === '/api/font-file/arialn') {
                 return statusResponse(true);
             }
-            if (url === '/fonts/missing.otf') {
+            if (url === '/api/font-file/missing') {
                 return statusResponse(false);
             }
             throw new Error(`unexpected url: ${url}`);
         });
         vi.stubGlobal('fetch', fetchMock);
 
-        await expect(loadFonts()).resolves.toEqual(['/fonts/ok.ttf']);
+        await expect(
+            loadFonts({ selectedFontUrls: ['/api/font-file/arialn', '/api/font-file/missing'] }),
+        ).resolves.toEqual(['/api/font-file/arialn']);
         expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('1 个字体文件无法访问'));
     });
 
@@ -77,17 +87,16 @@ describe('loadFonts 基本容错', () => {
             'fetch',
             vi.fn(async (input: RequestInfo | URL) => {
                 const url = String(input);
-                if (url === '/api/fonts') {
-                    return jsonResponse(['good.ttc', 'broken.woff2']);
-                }
-                if (url === '/fonts/good.ttc') {
+                if (url === '/api/font-file/arialn') {
                     return statusResponse(true);
                 }
                 throw new TypeError('network error');
             }),
         );
 
-        await expect(loadFonts()).resolves.toEqual(['/fonts/good.ttc']);
+        await expect(
+            loadFonts({ selectedFontUrls: ['/api/font-file/arialn', '/api/font-file/broken'] }),
+        ).resolves.toEqual(['/api/font-file/arialn']);
     });
 
     it('字体列表接口失败时返回空数组', async () => {
@@ -97,7 +106,7 @@ describe('loadFonts 基本容错', () => {
             vi.fn(async () => jsonResponse([], false)),
         );
 
-        await expect(loadFonts()).resolves.toEqual([]);
+        await expect(loadFonts({ assContent: ASS_CONTENT })).resolves.toEqual([]);
     });
 
     it('字体列表为空时返回空数组', async () => {
@@ -107,16 +116,16 @@ describe('loadFonts 基本容错', () => {
             vi.fn(async () => jsonResponse([])),
         );
 
-        await expect(loadFonts()).resolves.toEqual([]);
+        await expect(loadFonts({ assContent: ASS_CONTENT })).resolves.toEqual([]);
     });
 });
 
-describe('loadFonts 按需加载字体文件', () => {
-    it('选中具体字体文件时只加载该文件（同族字重不会互相覆盖）', async () => {
+describe('loadFonts 强制系统字体', () => {
+    it('选中字体时加载该字体族的全部字重文件，并去重', async () => {
         silenceConsole();
         const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
             const url = String(input);
-            if (url === '/fonts/HarmonyOS_Sans_SC_Thin.ttf') {
+            if (url.startsWith('/api/font-file/')) {
                 return statusResponse(true);
             }
             throw new Error(`unexpected url: ${url}`);
@@ -124,12 +133,17 @@ describe('loadFonts 按需加载字体文件', () => {
         vi.stubGlobal('fetch', fetchMock);
 
         await expect(
-            loadFonts({ selectedFontUrl: '/fonts/HarmonyOS_Sans_SC_Thin.ttf' }),
-        ).resolves.toEqual(['/fonts/HarmonyOS_Sans_SC_Thin.ttf']);
-        expect(fetchMock).toHaveBeenCalledTimes(1);
+            loadFonts({
+                selectedFontUrls: [
+                    '/api/font-file/harmony-regular',
+                    '/api/font-file/harmony-bold',
+                    '/api/font-file/harmony-regular',
+                ],
+            }),
+        ).resolves.toEqual(['/api/font-file/harmony-regular', '/api/font-file/harmony-bold']);
     });
 
-    it('未选字体时按 ASS 引用加载对应字体，同族只加载一个文件', async () => {
+    it('选中字体时同时加载 CJK 回退字体，避免主字体缺字时出现豆腐块', async () => {
         silenceConsole();
         vi.stubGlobal(
             'fetch',
@@ -138,16 +152,132 @@ describe('loadFonts 按需加载字体文件', () => {
                 if (url === '/api/font-options') {
                     return jsonResponse(FONT_OPTIONS);
                 }
-                if (url === '/fonts/HarmonyOS_Sans_SC_Black.ttf') {
+                if (url === '/api/font-file/harmony-regular') {
+                    return statusResponse(true);
+                }
+                if (url === '/api/font-file/msyh') {
                     return statusResponse(true);
                 }
                 throw new Error(`unexpected url: ${url}`);
             }),
         );
 
-        // ASS 引用 HarmonyOS Sans SC，同族有 Black/Thin 两个文件，只取第一个
-        const result = await loadFonts({ assContent: ASS_CONTENT });
-        expect(result).toEqual(['/fonts/HarmonyOS_Sans_SC_Black.ttf']);
+        await expect(
+            loadFonts({ selectedFontUrls: ['/api/font-file/harmony-regular'] }),
+        ).resolves.toEqual(['/api/font-file/harmony-regular', '/api/font-file/msyh']);
+    });
+
+    it('选中的字体全部不可访问时回退到按 ASS 引用匹配', async () => {
+        silenceConsole();
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async (input: RequestInfo | URL) => {
+                const url = String(input);
+                if (url === '/api/font-options') {
+                    return jsonResponse(FONT_OPTIONS);
+                }
+                if (url === '/api/font-file/missing') {
+                    return statusResponse(false);
+                }
+                if (url === '/api/font-file/harmony-regular') {
+                    return statusResponse(true);
+                }
+                throw new Error(`unexpected url: ${url}`);
+            }),
+        );
+
+        await expect(
+            loadFonts({
+                selectedFontUrls: ['/api/font-file/missing'],
+                assContent: ASS_CONTENT,
+            }),
+        ).resolves.toEqual(['/api/font-file/harmony-regular']);
+    });
+});
+
+describe('loadFonts 跟随原字幕', () => {
+    it('按 ASS 引用的字体族名匹配系统字体，同族只加载主文件', async () => {
+        silenceConsole();
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async (input: RequestInfo | URL) => {
+                const url = String(input);
+                if (url === '/api/font-options') {
+                    return jsonResponse(FONT_OPTIONS);
+                }
+                if (url === '/api/font-file/harmony-regular') {
+                    return statusResponse(true);
+                }
+                throw new Error(`unexpected url: ${url}`);
+            }),
+        );
+
+        await expect(loadFonts({ assContent: ASS_CONTENT })).resolves.toEqual([
+            '/api/font-file/harmony-regular',
+        ]);
+    });
+
+    it('跟随 ASS 匹配字体时也加载 CJK 回退字体', async () => {
+        silenceConsole();
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async (input: RequestInfo | URL) => {
+                const url = String(input);
+                if (url === '/api/font-options') {
+                    return jsonResponse(FONT_OPTIONS);
+                }
+                if (url === '/api/font-file/harmony-regular' || url === '/api/font-file/msyh') {
+                    return statusResponse(true);
+                }
+                throw new Error(`unexpected url: ${url}`);
+            }),
+        );
+
+        await expect(loadFonts({ assContent: ASS_CONTENT })).resolves.toEqual([
+            '/api/font-file/harmony-regular',
+            '/api/font-file/msyh',
+        ]);
+    });
+
+    it('支持本地化族名与竖排 @ 前缀', async () => {
+        silenceConsole();
+        const assContent = ASS_CONTENT.replace('HarmonyOS Sans SC', '@微软雅黑');
+        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url === '/api/font-options') {
+                return jsonResponse(FONT_OPTIONS);
+            }
+            if (url === '/api/font-file/msyh') {
+                return statusResponse(true);
+            }
+            throw new Error(`unexpected url: ${url}`);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(loadFonts({ assContent })).resolves.toEqual(['/api/font-file/msyh']);
+    });
+
+    it('匹配 ASS 行内 \\fn 覆盖标签', async () => {
+        silenceConsole();
+        const assContent = ASS_CONTENT.replace(
+            'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,测试',
+            'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\fnArial Narrow}测试',
+        );
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async (input: RequestInfo | URL) => {
+                const url = String(input);
+                if (url === '/api/font-options') {
+                    return jsonResponse(FONT_OPTIONS);
+                }
+                if (url === '/api/font-file/arialn') {
+                    return statusResponse(true);
+                }
+                throw new Error(`unexpected url: ${url}`);
+            }),
+        );
+
+        await expect(loadFonts({ assContent })).resolves.toEqual(['/api/font-file/arialn']);
     });
 
     it('Style 行在 Format 行之前时也能识别 ASS 引用的字体', async () => {
@@ -171,7 +301,7 @@ Dialogue: 0,00:00:01.00,00:00:02.00,歌曲字幕,,0,0,0,,测试
                 if (url === '/api/font-options') {
                     return jsonResponse(FONT_OPTIONS);
                 }
-                if (url === '/fonts/HarmonyOS_Sans_SC_Black.ttf') {
+                if (url === '/api/font-file/harmony-regular') {
                     return statusResponse(true);
                 }
                 throw new Error(`unexpected url: ${url}`);
@@ -179,11 +309,11 @@ Dialogue: 0,00:00:01.00,00:00:02.00,歌曲字幕,,0,0,0,,测试
         );
 
         await expect(loadFonts({ assContent })).resolves.toEqual([
-            '/fonts/HarmonyOS_Sans_SC_Black.ttf',
+            '/api/font-file/harmony-regular',
         ]);
     });
 
-    it('ASS 引用的字体匹配不到时只回退加载少量默认字体', async () => {
+    it('ASS 引用的字体匹配不到时加载服务端标记的回退字体', async () => {
         silenceConsole();
         const assContent = ASS_CONTENT.replace('HarmonyOS Sans SC', 'Unknown Font');
         vi.stubGlobal(
@@ -193,40 +323,13 @@ Dialogue: 0,00:00:01.00,00:00:02.00,歌曲字幕,,0,0,0,,测试
                 if (url === '/api/font-options') {
                     return jsonResponse(FONT_OPTIONS);
                 }
-                if (url === '/api/fonts') {
-                    return jsonResponse(['fallback.ttf']);
-                }
-                if (url === '/fonts/fallback.ttf') {
+                if (url === '/api/font-file/msyh') {
                     return statusResponse(true);
                 }
                 throw new Error(`unexpected url: ${url}`);
             }),
         );
 
-        await expect(loadFonts({ assContent })).resolves.toEqual(['/fonts/fallback.ttf']);
-    });
-
-    it('选中的字体文件不可访问时回退到按 ASS/全部字体加载', async () => {
-        silenceConsole();
-        vi.stubGlobal(
-            'fetch',
-            vi.fn(async (input: RequestInfo | URL) => {
-                const url = String(input);
-                if (url === '/fonts/HarmonyOS_Sans_SC_Black.ttf') {
-                    return statusResponse(false);
-                }
-                if (url === '/api/fonts') {
-                    return jsonResponse(['fallback.ttf']);
-                }
-                if (url === '/fonts/fallback.ttf') {
-                    return statusResponse(true);
-                }
-                throw new Error(`unexpected url: ${url}`);
-            }),
-        );
-
-        await expect(
-            loadFonts({ selectedFontUrl: '/fonts/HarmonyOS_Sans_SC_Black.ttf' }),
-        ).resolves.toEqual(['/fonts/fallback.ttf']);
+        await expect(loadFonts({ assContent })).resolves.toEqual(['/api/font-file/msyh']);
     });
 });
