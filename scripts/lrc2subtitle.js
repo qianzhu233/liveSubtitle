@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * @file LRC 歌词 → liveSubtitle 字幕包生成器（零依赖，Node >= 18）。
  *
