@@ -40,7 +40,7 @@
                     <option
                         v-for="font in store.fontOptions"
                         :key="font.fileName"
-                        :value="font.familyName"
+                        :value="font.fileName"
                     >
                         {{ getFontOptionLabel(font) }}
                     </option>
@@ -187,7 +187,11 @@ const getFontOptionLabel = (font: FontOption): string => {
     const duplicateCount = store.fontOptions.filter(
         (option) => option.familyName === font.familyName,
     ).length;
-    return duplicateCount > 1 ? `${font.familyName}（${font.fileName}）` : font.familyName;
+    if (duplicateCount <= 1) {
+        return font.familyName;
+    }
+    // 同族多字重时带上文件名，方便区分 Black/Thin 等具体字重
+    return `${font.familyName}（${font.fileName.replace(/\.[^.]+$/, '')}）`;
 };
 
 const getPreviewText = (file: SubtitleFile): string => {

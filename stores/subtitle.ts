@@ -11,8 +11,16 @@ export const useSubtitleStore = defineStore('subtitle', () => {
     const isPlaying = ref(false);
     const currentTime = ref(0);
     const fontOptions = ref<FontOption[]>([]);
-    // 空字符串 = 默认（原样式）
+    // 空字符串 = 默认（原样式）；非空时存字体文件名，保证同族不同字重可区分
     const selectedFont = ref('');
+    const selectedFontOption = computed(
+        () => fontOptions.value.find((option) => option.fileName === selectedFont.value) ?? null,
+    );
+    const selectedFontPayload = computed(() => ({
+        fontFile: selectedFontOption.value?.fileName ?? '',
+        fontFamily: selectedFontOption.value?.familyName ?? '',
+        fontUrl: selectedFontOption.value?.url ?? '',
+    }));
     const filterOptions = ref<FilterOptions>({
         searchText: '',
     });
@@ -91,27 +99,12 @@ export const useSubtitleStore = defineStore('subtitle', () => {
 
     const broadcastFileSelect = (file: SubtitleFile) => {
         // 字体是展示端的全局设置，随文件选择一起下发，保证切换歌曲后仍然生效
-        socket.emit('file-selected', { file, fontFamily: selectedFont.value });
-
-        setTimeout(async () => {
-            try {
-                const response = await fetch(`/api/subtitle-file/${file.id}`);
-                if (response.ok) {
-                    const originalAssContent = await response.text();
-                    // 颜色跟随 ASS 本身：这里始终发送原始 ASS，字体由展示端统一应用
-                    socket.emit('ass-content-update', {
-                        assContent: originalAssContent,
-                    });
-                }
-            } catch (error) {
-                console.error('文件选择后发送ASS文件失败:', error);
-            }
-        }, 100);
+        socket.emit('file-selected', { file, ...selectedFontPayload.value });
     };
 
     // 字体设置对全局生效：单独通知展示端，由展示端应用到所有字幕内容上
     const broadcastFontChange = () => {
-        socket.emit('font-change', { fontFamily: selectedFont.value });
+        socket.emit('font-change', selectedFontPayload.value);
     };
 
     const loadSubtitleFiles = async () => {
@@ -130,6 +123,10 @@ export const useSubtitleStore = defineStore('subtitle', () => {
     const loadFontOptions = async () => {
         try {
             fontOptions.value = await fetchFontOptions();
+            // 之前选中的字体文件如果已不存在，回到默认样式
+            if (selectedFont.value && !selectedFontOption.value) {
+                selectedFont.value = '';
+            }
         } catch (error) {
             console.error('加载字体选项失败:', error);
             fontOptions.value = [];
@@ -143,6 +140,8 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         currentTime,
         fontOptions,
         selectedFont,
+        selectedFontOption,
+        selectedFontPayload,
         filterOptions,
         filterConfig,
         isLoading,

@@ -28,6 +28,34 @@ export function applyAssFont(assContent: string, fontFamily: string): string {
 
     // 拆出换行分隔符，保证处理后的换行符与原文完全一致
     const segments = assContent.split(/(\r\n|\n|\r)/);
+
+    // 预扫描：样式段里是否有 Format 行。
+    // 有 Format 时，Format 之前的 Style 行按标准列顺序处理（LDDC 等工具会这样输出）；
+    // 整个样式段都没有 Format 时保持原行为，不做改写。
+    const hasStyleFormat = (() => {
+        let inStyles = false;
+        for (let index = 0; index < segments.length; index += 2) {
+            const trimmedLine = (segments[index] ?? '').trim();
+            const sectionMatch = SECTION_PATTERN.exec(trimmedLine);
+            if (sectionMatch) {
+                const sectionName = (sectionMatch[1] ?? '').trim().toLowerCase();
+                inStyles = sectionName === 'v4+ styles' || sectionName === 'v4 styles';
+                continue;
+            }
+            if (!inStyles) {
+                continue;
+            }
+            const colonIndex = trimmedLine.indexOf(':');
+            if (colonIndex < 0) {
+                continue;
+            }
+            if (trimmedLine.slice(0, colonIndex).trim().toLowerCase() === 'format') {
+                return true;
+            }
+        }
+        return false;
+    })();
+
     let inStyleSection = false;
     let formatFields: string[] | null = null;
 
@@ -63,11 +91,18 @@ export function applyAssFont(assContent: string, fontFamily: string): string {
             continue;
         }
 
-        if (keyword !== 'style' || !formatFields || formatFields.length === 0) {
+        if (keyword !== 'style') {
             continue;
         }
 
-        const fieldIndex = formatFields.findIndex((field) => field.toLowerCase() === 'fontname');
+        // 样式段完全没有 Format 行时保持原样
+        if (!formatFields && !hasStyleFormat) {
+            continue;
+        }
+
+        // 兼容「Style 行出现在 Format 行之前」的 ASS：此时按标准列顺序回退
+        const fieldIndex =
+            formatFields?.findIndex((field) => field.toLowerCase() === 'fontname') ?? -1;
         const targetIndex = fieldIndex >= 0 ? fieldIndex : FALLBACK_FONT_COLUMN_INDEX;
 
         const columns = payload.split(',');

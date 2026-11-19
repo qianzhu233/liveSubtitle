@@ -199,3 +199,29 @@ describe('buildAssUpdate 颜色与字体组合', () => {
         );
     });
 });
+
+describe('applyAssFont 兼容 Style 行在 Format 行之前', () => {
+    // 部分工具（如 LDDC）生成的 ASS 会把主样式写在 Format 行之前
+    const STYLE_BEFORE_FORMAT_ASS = `[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Style: 歌曲字幕,思源黑体 Heavy,48,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3.5,2,2,10,10,10,1
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: orig,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,00:00:20.43,00:00:26.28,歌曲字幕,,0,0,0,,那是我日夜思念深深爱着的人啊
+`;
+
+    it('Format 行之前的主样式也会被替换字体', () => {
+        const result = applyAssFont(STYLE_BEFORE_FORMAT_ASS, 'FZFW ZhuZi A YuanS');
+
+        expect(styleLines(result)).toEqual([
+            'Style: 歌曲字幕,FZFW ZhuZi A YuanS,48,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3.5,2,2,10,10,10,1',
+            'Style: orig,FZFW ZhuZi A YuanS,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1',
+        ]);
+        expect(result).toContain('那是我日夜思念深深爱着的人啊');
+    });
+});

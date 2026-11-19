@@ -9,8 +9,14 @@ import type { FontOption, SubtitleFile } from '../../types/subtitle';
 // SubtitleSelector 依赖 Nuxt 自动导入的 socket store，这里提供一个最小替身
 const socketMock = vi.hoisted(() => {
     const emit = vi.fn();
-    (globalThis as any).useSocketIOStore = () => ({ emit });
-    return { emit };
+    const handlers = new Map<string, Array<(...args: any[]) => void>>();
+    const on = vi.fn((event: string, handler: (...args: any[]) => void) => {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+    });
+    (globalThis as any).useSocketIOStore = () => ({ emit, on });
+    return { emit, on, handlers };
 });
 
 const testFile: SubtitleFile = {
@@ -32,9 +38,14 @@ const FONT_OPTIONS: FontOption[] = [
         url: '/fonts/FZFWZhuZiAYuanJWB.TTF',
     },
     {
-        fileName: 'TsukushiAMaruGothic.ttc',
-        familyName: 'Tsukushi A Round Gothic',
-        url: '/fonts/TsukushiAMaruGothic.ttc',
+        fileName: 'HarmonyOS_Sans_SC_Black.ttf',
+        familyName: 'HarmonyOS Sans SC',
+        url: '/fonts/HarmonyOS_Sans_SC_Black.ttf',
+    },
+    {
+        fileName: 'HarmonyOS_Sans_SC_Thin.ttf',
+        familyName: 'HarmonyOS Sans SC',
+        url: '/fonts/HarmonyOS_Sans_SC_Thin.ttf',
     },
 ];
 
@@ -106,6 +117,8 @@ beforeEach(async () => {
     pinia = createPinia();
     setActivePinia(pinia);
 
+    socketMock.handlers.clear();
+    socketMock.on.mockClear();
     socketMock.emit.mockClear();
     fetchMock = createFetchMock();
     vi.stubGlobal('fetch', fetchMock);
@@ -132,13 +145,13 @@ describe('SubtitleSelector 颜色与字体', () => {
         expect(wrapper!.text()).toContain('跟随 ASS 本身');
     });
 
-    it('字体下拉选项来自 /api/font-options 且在挂载后加载', () => {
+    it('字体下拉按具体字体文件列出，同族不同字重可区分', () => {
         const store = useSubtitleStore(pinia);
 
         expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/font-options')).toBe(
             true,
         );
-        expect(store.fontOptions).toHaveLength(2);
+        expect(store.fontOptions).toHaveLength(3);
         expect(store.subtitleFiles).toHaveLength(1);
 
         const fontSelect = wrapper!.find('select.font-select');
@@ -147,12 +160,20 @@ describe('SubtitleSelector 颜色与字体', () => {
         const optionTexts = fontSelect.findAll('option').map((option) => option.text());
         expect(optionTexts[0]).toBe('默认（原样式）');
         expect(optionTexts).toContain('FZFW ZhuZi A YuanS');
-        expect(optionTexts).toContain('Tsukushi A Round Gothic');
+        // 同族多字重时 label 带文件名，避免同名选项无法区分
+        expect(optionTexts).toContain('HarmonyOS Sans SC（HarmonyOS_Sans_SC_Black）');
+        expect(optionTexts).toContain('HarmonyOS Sans SC（HarmonyOS_Sans_SC_Thin）');
+
+        const optionValues = fontSelect
+            .findAll('option')
+            .map((option) => (option.element as HTMLOptionElement).value);
+        expect(optionValues).toContain('HarmonyOS_Sans_SC_Black.ttf');
+        expect(optionValues).toContain('HarmonyOS_Sans_SC_Thin.ttf');
     });
 
-    it('选择文件时下发原始 ASS（颜色不改写），并携带当前全局字体', async () => {
+    it('选择文件时携带当前全局字体文件（ASS 由展示端自行拉取）', async () => {
         const store = useSubtitleStore(pinia);
-        store.selectedFont = 'Tsukushi A Round Gothic';
+        store.selectedFont = 'HarmonyOS_Sans_SC_Thin.ttf';
         socketMock.emit.mockClear();
 
         store.selectFile(testFile);
@@ -163,17 +184,19 @@ describe('SubtitleSelector 颜色与字体', () => {
         expect(fileSelectedCalls).toHaveLength(1);
         expect(fileSelectedCalls[0]![1]).toMatchObject({
             file: testFile,
-            fontFamily: 'Tsukushi A Round Gothic',
+            fontFile: 'HarmonyOS_Sans_SC_Thin.ttf',
+            fontFamily: 'HarmonyOS Sans SC',
+            fontUrl: '/fonts/HarmonyOS_Sans_SC_Thin.ttf',
         });
 
         const assUpdateCalls = emitCalls('ass-content-update');
-        expect(assUpdateCalls).toHaveLength(1);
-        expect((assUpdateCalls[0]![1] as { assContent: string }).assContent).toBe(ASS_CONTENT);
+        // 选文件时展示端自己拉取 ASS，不再重复发送一次内容
+        expect(assUpdateCalls).toHaveLength(0);
     });
 });
 
 describe('SubtitleSelector 字体全局切换', () => {
-    it('修改字体下拉后发出 font-change 事件（不再重发 ASS），并移走焦点', async () => {
+    it('修改字体下拉后发出 font-change 事件（含具体字体文件），并移走焦点', async () => {
         const store = useSubtitleStore(pinia);
         socketMock.emit.mockClear();
 
@@ -181,23 +204,46 @@ describe('SubtitleSelector 字体全局切换', () => {
         (fontSelect.element as HTMLSelectElement).focus();
         expect(document.activeElement).toBe(fontSelect.element);
 
-        await fontSelect.setValue('FZFW ZhuZi A YuanS');
+        await fontSelect.setValue('HarmonyOS_Sans_SC_Black.ttf');
         await flushAll();
 
-        expect(store.selectedFont).toBe('FZFW ZhuZi A YuanS');
+        expect(store.selectedFont).toBe('HarmonyOS_Sans_SC_Black.ttf');
         expect(emitCalls('font-change')).toHaveLength(1);
-        expect(emitCalls('font-change')[0]![1]).toEqual({ fontFamily: 'FZFW ZhuZi A YuanS' });
+        expect(emitCalls('font-change')[0]![1]).toEqual({
+            fontFile: 'HarmonyOS_Sans_SC_Black.ttf',
+            fontFamily: 'HarmonyOS Sans SC',
+            fontUrl: '/fonts/HarmonyOS_Sans_SC_Black.ttf',
+        });
         // 字体由展示端全局应用，切换字体时不需要重新发送 ASS
         expect(emitCalls('ass-content-update')).toHaveLength(0);
         // 焦点已离开下拉框，空格键可以继续用于暂停
         expect((document.activeElement as HTMLElement | null)?.tagName).toBe('BODY');
     });
 
+    it('同族不同字重切换时下发不同的字体文件，而不是只换家族名', async () => {
+        const fontSelect = wrapper!.find('select.font-select');
+
+        await fontSelect.setValue('HarmonyOS_Sans_SC_Black.ttf');
+        await flushAll();
+        const blackPayload = emitCalls('font-change').at(-1)![1] as Record<string, string>;
+
+        socketMock.emit.mockClear();
+        await fontSelect.setValue('HarmonyOS_Sans_SC_Thin.ttf');
+        await flushAll();
+        const thinPayload = emitCalls('font-change').at(-1)![1] as Record<string, string>;
+
+        // 家族名相同，但字体文件/URL 不同，展示端据此只加载对应字重
+        expect(blackPayload.fontFamily).toBe('HarmonyOS Sans SC');
+        expect(thinPayload.fontFamily).toBe('HarmonyOS Sans SC');
+        expect(blackPayload.fontUrl).toBe('/fonts/HarmonyOS_Sans_SC_Black.ttf');
+        expect(thinPayload.fontUrl).toBe('/fonts/HarmonyOS_Sans_SC_Thin.ttf');
+    });
+
     it('切回「默认（原样式）」时发出空字体事件', async () => {
         const store = useSubtitleStore(pinia);
         const fontSelect = wrapper!.find('select.font-select');
 
-        await fontSelect.setValue('Tsukushi A Round Gothic');
+        await fontSelect.setValue('HarmonyOS_Sans_SC_Black.ttf');
         await flushAll();
         socketMock.emit.mockClear();
 
@@ -206,6 +252,10 @@ describe('SubtitleSelector 字体全局切换', () => {
 
         expect(store.selectedFont).toBe('');
         expect(emitCalls('font-change')).toHaveLength(1);
-        expect(emitCalls('font-change')[0]![1]).toEqual({ fontFamily: '' });
+        expect(emitCalls('font-change')[0]![1]).toEqual({
+            fontFile: '',
+            fontFamily: '',
+            fontUrl: '',
+        });
     });
 });

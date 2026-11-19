@@ -18,7 +18,9 @@ const isPlaying = ref(false);
 const selectedFile = ref<SubtitleFile | null>(null);
 
 // 字体为展示端的全局设置：切换歌曲、更新 ASS 内容时都统一应用
+// fontUrl 指向具体字体文件，保证同族不同字重（Black/Thin 等）能真正切换
 const fontFamily = ref('');
+const fontUrl = ref('');
 let currentAssContent = '';
 let rendererRequestId = 0;
 
@@ -68,6 +70,7 @@ const initSocketListeners = () => {
     socket.on('font-change', (data: any) => {
         console.log('收到字体变化:', data);
         fontFamily.value = String(data?.fontFamily ?? '');
+        fontUrl.value = String(data?.fontUrl ?? '');
         reinitWithCurrentContent();
     });
 
@@ -81,6 +84,9 @@ const initSocketListeners = () => {
         // 字体设置随文件选择一起同步，保证切换歌曲后字体仍然全局生效
         if (typeof data.fontFamily === 'string') {
             fontFamily.value = data.fontFamily;
+        }
+        if (typeof data.fontUrl === 'string') {
+            fontUrl.value = data.fontUrl;
         }
         loadSubtitleFile(data.file);
     });
@@ -137,7 +143,7 @@ const initSubtitleRenderers = async (assContent: string): Promise<void> => {
                 canvas.value.height = 1080;
             }
 
-            loadFonts()
+            loadFonts({ selectedFontUrl: fontUrl.value, assContent })
                 .then((fonts) => {
                     if (requestId !== rendererRequestId) {
                         // 已有更新的渲染请求，丢弃本次过期结果
