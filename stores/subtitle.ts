@@ -107,6 +107,28 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         socket.emit('font-change', selectedFontPayload.value);
     };
 
+    // 展示端刷新/重连后主动请求同步，避免 OBS 页面重载后一直空白
+    const resyncDisplay = () => {
+        if (!selectedFile.value) return;
+        socket.emit('file-selected', {
+            file: selectedFile.value,
+            ...selectedFontPayload.value,
+        });
+        socket.emit('play-state-change', { isPlaying: isPlaying.value });
+        socket.emit('time-sync', { currentTime: currentTime.value });
+    };
+
+    socket.on('request-sync', () => {
+        console.log('[socket.io] 展示端请求同步状态');
+        resyncDisplay();
+    });
+    socket.on('connect', () => {
+        // 控制端重连时也补发一次状态，防止服务重启后两端状态不一致
+        if (selectedFile.value) {
+            resyncDisplay();
+        }
+    });
+
     const loadSubtitleFiles = async () => {
         isLoading.value = true;
         try {

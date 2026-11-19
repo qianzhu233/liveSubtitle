@@ -113,6 +113,12 @@ const flushAll = async () => {
 const emitCalls = (eventName: string) =>
     socketMock.emit.mock.calls.filter(([name]) => name === eventName);
 
+const triggerSocketEvent = (eventName: string, ...args: unknown[]) => {
+    for (const handler of socketMock.handlers.get(eventName) ?? []) {
+        handler(...args);
+    }
+};
+
 beforeEach(async () => {
     pinia = createPinia();
     setActivePinia(pinia);
@@ -192,6 +198,28 @@ describe('SubtitleSelector 颜色与字体', () => {
         const assUpdateCalls = emitCalls('ass-content-update');
         // 选文件时展示端自己拉取 ASS，不再重复发送一次内容
         expect(assUpdateCalls).toHaveLength(0);
+    });
+
+    it('展示端请求同步时补发当前选中的字幕/字体/播放状态', async () => {
+        const store = useSubtitleStore(pinia);
+        store.selectFile(testFile);
+        store.play();
+        store.setCurrentTime(3);
+        socketMock.emit.mockClear();
+
+        triggerSocketEvent('request-sync');
+
+        const fileSelectedCalls = emitCalls('file-selected');
+        expect(fileSelectedCalls).toHaveLength(1);
+        expect(fileSelectedCalls[0]![1]).toMatchObject({ file: testFile });
+
+        const playStateCalls = emitCalls('play-state-change');
+        expect(playStateCalls).toHaveLength(1);
+        expect(playStateCalls[0]![1]).toEqual({ isPlaying: true });
+
+        const timeSyncCalls = emitCalls('time-sync');
+        expect(timeSyncCalls).toHaveLength(1);
+        expect(timeSyncCalls[0]![1]).toEqual({ currentTime: 3 });
     });
 });
 

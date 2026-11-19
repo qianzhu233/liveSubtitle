@@ -31,6 +31,11 @@ export default defineNitroPlugin((nitro) => {
                 socket.broadcast.emit('font-change', data);
             });
 
+            socket.on('request-sync', () => {
+                console.log('[socket.io] 收到状态同步请求');
+                socket.broadcast.emit('request-sync');
+            });
+
             socket.on('disconnect', () => {
                 console.log('[socket.io] 客户端已断开:', socket.id);
             });

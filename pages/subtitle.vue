@@ -36,6 +36,9 @@ const applyCurrentFont = (assContent: string): string =>
 const initSocketListeners = () => {
     socket.on('connect', () => {
         console.log('展示端已连接到服务器，Socket ID:', socket.id);
+        // OBS 浏览器来源刷新/断线重连后，请求控制端补发当前字幕与播放状态，
+        // 避免页面重载后一直空白直到操作者重新选歌
+        socket.emit('request-sync');
     });
 
     socket.on('play-state-change', (data: any) => {
@@ -117,7 +120,7 @@ const loadSubtitleFile = async (file: SubtitleFile) => {
 
         await initSubtitleRenderers(applyCurrentFont(assContent));
 
-        currentTime.value = 0;
+        // 加载期间可能已收到补发的时间同步（展示端刷新/重连场景），保留它而不是强制归零
         updateSubtitles();
     } catch (error) {
         console.error('加载字幕文件失败:', error);
