@@ -90,15 +90,21 @@ describe('getFontOptions 字体选项', () => {
         });
 
         // 同一字体族的多个字重使用相同 familyName，由控制端用文件名区分。
-        // 仓库未内置该字体族，只有放入对应字体文件时才校验，避免测试依赖本机字体。
-        const harmonyFileNames = expectedFileNames.filter((fileName) =>
-            fileName.startsWith('HarmonyOS_Sans_SC_'),
+        // 仓库内置 GenSenRounded2PJP 的多个字重，可直接断言；
+        // HarmonyOS Sans SC 等本机字体只在放入 public/fonts 时额外校验，
+        // 避免测试依赖开发者本地的字体文件。
+        const genSenOptions = options.filter((option) =>
+            option.fileName.startsWith('GenSenRounded2PJP-'),
         );
+        expect(genSenOptions.length).toBeGreaterThan(1);
+        expect(new Set(genSenOptions.map((option) => option.familyName))).toEqual(
+            new Set(['GenSenRounded2 PJP']),
+        );
+
         const harmonyOptions = options.filter((option) =>
             option.fileName.startsWith('HarmonyOS_Sans_SC_'),
         );
-        expect(harmonyOptions.map((option) => option.fileName)).toEqual(harmonyFileNames);
-        if (harmonyFileNames.length > 0) {
+        if (harmonyOptions.length > 0) {
             expect(
                 harmonyOptions.every((option) => option.familyName === 'HarmonyOS Sans SC'),
             ).toBe(true);
