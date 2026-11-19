@@ -138,6 +138,23 @@ describe('控制端注册与快照', () => {
         ]);
     });
 
+    it('服务端没有会话时也重新播种临时隐藏状态', () => {
+        store.selectedFile = testFile;
+        store.subtitlesHidden = true;
+        socketMock.emit.mockClear();
+
+        trigger('state-sync', {
+            selectedFile: null,
+            isPlaying: false,
+            currentTime: 0,
+            duration: 0,
+        });
+
+        expect(emitCalls('subtitle-visibility-change')).toEqual([
+            ['subtitle-visibility-change', { hidden: true }],
+        ]);
+    });
+
     it('服务端快照优先于本地状态', () => {
         store.selectedFile = otherFile;
 
@@ -260,6 +277,71 @@ describe('本地操作广播', () => {
 
         expect(store.currentTime).toBe(0);
         expect(store.isPlaying).toBe(false);
+        expect(socketMock.emit).not.toHaveBeenCalled();
+    });
+});
+
+describe('字幕临时隐藏', () => {
+    it('快照与远端事件同步隐藏状态，但不回发', () => {
+        trigger('state-sync', {
+            selectedFile: testFile,
+            isPlaying: false,
+            currentTime: 0,
+            duration: 30,
+            subtitlesHidden: true,
+        });
+
+        expect(store.subtitlesHidden).toBe(true);
+
+        trigger('subtitle-visibility-change', { hidden: false });
+
+        expect(store.subtitlesHidden).toBe(false);
+        expect(socketMock.emit).not.toHaveBeenCalled();
+    });
+
+    it('本地隐藏/恢复会广播，相同状态不重复广播', () => {
+        store.selectedFile = testFile;
+
+        store.toggleSubtitlesHidden();
+        expect(store.subtitlesHidden).toBe(true);
+        expect(emitCalls('subtitle-visibility-change')).toEqual([
+            ['subtitle-visibility-change', { hidden: true }],
+        ]);
+
+        store.setSubtitlesHidden(true);
+        expect(emitCalls('subtitle-visibility-change')).toHaveLength(1);
+
+        store.toggleSubtitlesHidden();
+        expect(store.subtitlesHidden).toBe(false);
+        expect(emitCalls('subtitle-visibility-change').at(-1)).toEqual([
+            'subtitle-visibility-change',
+            { hidden: false },
+        ]);
+    });
+
+    it('没有选择字幕文件时忽略隐藏操作', () => {
+        store.toggleSubtitlesHidden();
+
+        expect(store.subtitlesHidden).toBe(false);
+        expect(emitCalls('subtitle-visibility-change')).toHaveLength(0);
+    });
+
+    it('本地切换字幕文件后恢复显示', () => {
+        store.selectedFile = testFile;
+        store.subtitlesHidden = true;
+
+        store.selectFile(otherFile);
+
+        expect(store.subtitlesHidden).toBe(false);
+        expect(emitCalls('subtitle-visibility-change')).toHaveLength(0);
+    });
+
+    it('其它控制端切换字幕文件后恢复显示', () => {
+        store.subtitlesHidden = true;
+
+        trigger('file-selected', { file: testFile, fontFamily: '' });
+
+        expect(store.subtitlesHidden).toBe(false);
         expect(socketMock.emit).not.toHaveBeenCalled();
     });
 });

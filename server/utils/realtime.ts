@@ -5,6 +5,7 @@ import {
     applyFontChange,
     applyPlayStateChange,
     applyTimeSync,
+    applyVisibilityChange,
     createSessionState,
     createSnapshot,
     projectCurrentTime,
@@ -114,6 +115,7 @@ export function attachRealtime(io: any, options: RealtimeOptions = {}): Realtime
             socket.broadcast.emit('file-selected', {
                 file: session.selectedFile,
                 ...session.font,
+                subtitlesHidden: session.subtitlesHidden,
             });
             syncClock();
         });
@@ -138,6 +140,14 @@ export function attachRealtime(io: any, options: RealtimeOptions = {}): Realtime
         socket.on('font-change', (data: any) => {
             if (!applyFontChange(session, data)) return;
             socket.broadcast.emit('font-change', session.font);
+        });
+
+        // 临时隐藏/恢复所有字幕渲染层：只同步可见性，不改变播放状态
+        socket.on('subtitle-visibility-change', (data: any) => {
+            if (!applyVisibilityChange(session, data)) return;
+            socket.broadcast.emit('subtitle-visibility-change', {
+                hidden: session.subtitlesHidden,
+            });
         });
 
         socket.on('ass-content-update', (data: any) => {

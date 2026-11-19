@@ -306,6 +306,55 @@ describe('多前端同步：操作转发', () => {
         }
     });
 
+    it('临时隐藏/恢复字幕转发给其它控制端与展示端，发送者不回显', () => {
+        const control = register('control-1');
+        const other = register('control-2');
+        const display = register('display-1', 'display');
+        control.trigger('file-selected', filePayload);
+        control.clear();
+        other.clear();
+        display.clear();
+
+        control.trigger('subtitle-visibility-change', { hidden: true });
+
+        expect(control.events('subtitle-visibility-change')).toHaveLength(0);
+        expect(other.events('subtitle-visibility-change')).toEqual([{ hidden: true }]);
+        expect(display.events('subtitle-visibility-change')).toEqual([{ hidden: true }]);
+
+        // 相同状态不重复广播
+        other.clear();
+        display.clear();
+        control.trigger('subtitle-visibility-change', { hidden: true });
+        expect(other.events('subtitle-visibility-change')).toHaveLength(0);
+        expect(display.events('subtitle-visibility-change')).toHaveLength(0);
+
+        control.trigger('subtitle-visibility-change', { hidden: false });
+        expect(other.events('subtitle-visibility-change')).toEqual([{ hidden: false }]);
+        expect(display.events('subtitle-visibility-change')).toEqual([{ hidden: false }]);
+    });
+
+    it('临时隐藏状态进入快照，切换字幕文件后恢复显示', () => {
+        const control = register('control-1');
+        const display = register('display-1', 'display');
+        control.trigger('file-selected', filePayload);
+        control.trigger('subtitle-visibility-change', { hidden: true });
+
+        expect(register('late-control').events('state-sync')[0]).toMatchObject({
+            subtitlesHidden: true,
+        });
+        expect(register('late-display', 'display').events('state-sync')[0]).toMatchObject({
+            subtitlesHidden: true,
+        });
+
+        display.clear();
+        control.trigger('file-selected', filePayload);
+
+        expect(display.events('file-selected')[0]).toMatchObject({ subtitlesHidden: false });
+        expect(register('after-file').events('state-sync')[0]).toMatchObject({
+            subtitlesHidden: false,
+        });
+    });
+
     it('ASS 内容更新只转发给其它前端', () => {
         const control = register('control-1');
         const display = register('display-1', 'display');

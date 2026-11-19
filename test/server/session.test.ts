@@ -5,6 +5,7 @@ import {
     applyFontChange,
     applyPlayStateChange,
     applyTimeSync,
+    applyVisibilityChange,
     createSessionState,
     createSnapshot,
     projectCurrentTime,
@@ -33,11 +34,13 @@ describe('会话状态：字幕文件', () => {
         const state = createSessionState();
         state.currentTime = 30;
         state.isPlaying = true;
+        state.subtitlesHidden = true;
 
         expect(applyFileSelected(state, filePayload, 1000)).toBe(true);
         expect(state.selectedFile).toBe(testFile);
         expect(state.currentTime).toBe(0);
         expect(state.isPlaying).toBe(false);
+        expect(state.subtitlesHidden).toBe(false);
         expect(state.anchorAt).toBe(1000);
         expect(state.font).toEqual({
             fontFile: 'regular.ttf',
@@ -162,6 +165,48 @@ describe('会话状态：全局字体', () => {
     });
 });
 
+describe('会话状态：临时隐藏字幕', () => {
+    it('隐藏/恢复只改变可见性，状态变化时递增版本', () => {
+        const state = createSessionState();
+        applyFileSelected(state, filePayload, 0);
+        const revision = state.revision;
+        const currentTime = state.currentTime;
+        const isPlaying = state.isPlaying;
+
+        expect(state.subtitlesHidden).toBe(false);
+        expect(applyVisibilityChange(state, { hidden: true })).toBe(true);
+        expect(state.subtitlesHidden).toBe(true);
+        expect(state.revision).toBe(revision + 1);
+        expect(state.currentTime).toBe(currentTime);
+        expect(state.isPlaying).toBe(isPlaying);
+        expect(createSnapshot(state, 0).subtitlesHidden).toBe(true);
+
+        expect(applyVisibilityChange(state, { hidden: true })).toBe(false);
+        expect(applyVisibilityChange(state, { hidden: false })).toBe(true);
+        expect(state.subtitlesHidden).toBe(false);
+        expect(createSnapshot(state, 0).subtitlesHidden).toBe(false);
+    });
+
+    it('没有选择字幕文件时忽略', () => {
+        const state = createSessionState();
+
+        expect(applyVisibilityChange(state, { hidden: true })).toBe(false);
+        expect(state.subtitlesHidden).toBe(false);
+        expect(state.revision).toBe(0);
+    });
+
+    it('切换字幕文件后恢复显示', () => {
+        const state = createSessionState();
+        applyFileSelected(state, filePayload, 0);
+        applyVisibilityChange(state, { hidden: true });
+
+        applyFileSelected(state, filePayload, 1000);
+
+        expect(state.subtitlesHidden).toBe(false);
+        expect(createSnapshot(state, 1000).subtitlesHidden).toBe(false);
+    });
+});
+
 describe('服务端时钟推进', () => {
     it('播放中返回外推时间', () => {
         const state = createSessionState();
@@ -212,6 +257,7 @@ describe('会话快照', () => {
             isPlaying: true,
             currentTime: 12,
             duration: 100,
+            subtitlesHidden: false,
             serverTime: 3000,
             fontFile: 'regular.ttf',
             fontFamily: 'Test Font',
@@ -230,6 +276,7 @@ describe('会话快照', () => {
             isPlaying: false,
             currentTime: 0,
             duration: 0,
+            subtitlesHidden: false,
             serverTime: 1234,
             fontFamily: '',
         });

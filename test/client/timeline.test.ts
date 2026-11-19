@@ -27,6 +27,8 @@ const testFile: SubtitleFile = {
     blocks: [
         { id: 'test-song-1', startTime: 0, endTime: 5, text: 'line 1', track: 1 },
         { id: 'test-song-2', startTime: 5, endTime: 10, text: 'line 2', track: 1 },
+        { id: 'test-song-3', startTime: 12, endTime: 14, text: 'track2 line', track: 2 },
+        { id: 'test-song-4', startTime: 16, endTime: 18, text: 'track2 line 2', track: 2 },
     ],
     createdAt: '',
     updatedAt: '',
@@ -55,11 +57,16 @@ const playStateEmits = () =>
 const timeSyncEmits = () =>
     socketMock.emit.mock.calls.filter(([eventName]) => eventName === 'time-sync');
 
+const visibilityEmits = () =>
+    socketMock.emit.mock.calls.filter(([eventName]) => eventName === 'subtitle-visibility-change');
+
 const trigger = (eventName: string, ...args: unknown[]) => {
     for (const handler of socketMock.handlers.get(eventName) ?? []) {
         handler(...args);
     }
 };
+
+const shortcutButton = (name: string) => wrapper!.get(`[data-shortcut="${name}"]`);
 
 beforeEach(() => {
     pinia = createPinia();
@@ -219,5 +226,165 @@ describe('Timeline 多控制端同步', () => {
         expect(store().isPlaying).toBe(false);
         expect(playStateEmits()).toHaveLength(0);
         expect(timeSyncEmits()).toHaveLength(0);
+    });
+});
+
+describe('Timeline 快捷键按钮', () => {
+    const shortcuts = [
+        'toggle-playback',
+        'toggle-subtitles-left',
+        'track1-prev',
+        'track1-next',
+        'toggle-subtitles-a',
+        'track2-prev',
+        'track2-next',
+    ];
+
+    it('每个键盘快捷键都有对应的按钮', () => {
+        for (const shortcut of shortcuts) {
+            expect(wrapper!.find(`[data-shortcut="${shortcut}"]`).exists()).toBe(true);
+        }
+    });
+
+    it('点击播放按钮切换播放状态', async () => {
+        await shortcutButton('toggle-playback').trigger('click');
+
+        expect(store().isPlaying).toBe(true);
+        expect(playStateEmits()[0]![1]).toMatchObject({ isPlaying: true });
+
+        await shortcutButton('toggle-playback').trigger('click');
+
+        expect(store().isPlaying).toBe(false);
+        expect(playStateEmits().at(-1)![1]).toMatchObject({ isPlaying: false });
+    });
+
+    it('点击轨道 1 下一条与按 ↓ 等价：跳到下一条并播放', async () => {
+        store().currentTime = 2.5;
+
+        await shortcutButton('track1-next').trigger('click');
+
+        expect(store().currentTime).toBe(5);
+        expect(store().isPlaying).toBe(true);
+        expect(playStateEmits().at(-1)![1]).toEqual({ isPlaying: true, currentTime: 5 });
+    });
+
+    it('点击隐藏按钮暂时隐藏所有字幕，再点恢复，且不改变进度/播放状态', async () => {
+        store().currentTime = 2.5;
+        store().isPlaying = true;
+        await nextTick();
+
+        const leftButton = shortcutButton('toggle-subtitles-left');
+        const aButton = shortcutButton('toggle-subtitles-a');
+
+        expect(leftButton.text()).toContain('隐藏');
+
+        await leftButton.trigger('click');
+
+        expect(store().subtitlesHidden).toBe(true);
+        expect(store().currentTime).toBe(2.5);
+        expect(store().isPlaying).toBe(true);
+        expect(timeSyncEmits()).toHaveLength(0);
+        expect(visibilityEmits()).toEqual([['subtitle-visibility-change', { hidden: true }]]);
+        expect(leftButton.text()).toContain('显示');
+        expect(aButton.text()).toContain('显示');
+
+        await aButton.trigger('click');
+
+        expect(store().subtitlesHidden).toBe(false);
+        expect(store().currentTime).toBe(2.5);
+        expect(store().isPlaying).toBe(true);
+        expect(visibilityEmits().at(-1)).toEqual(['subtitle-visibility-change', { hidden: false }]);
+    });
+
+    it('点击轨道 1 上一条与按 ↑ 等价：导航到上一条字幕并播放', async () => {
+        store().currentTime = 7;
+
+        await shortcutButton('track1-prev').trigger('click');
+
+        expect(store().currentTime).toBe(0);
+        expect(store().isPlaying).toBe(true);
+        expect(playStateEmits().at(-1)![1]).toEqual({ isPlaying: true, currentTime: 0 });
+    });
+
+    it('没有上一条字幕时不动作', async () => {
+        store().currentTime = 2.5;
+
+        await shortcutButton('track1-prev').trigger('click');
+
+        expect(store().currentTime).toBe(2.5);
+        expect(store().isPlaying).toBe(false);
+        expect(playStateEmits()).toHaveLength(0);
+        expect(timeSyncEmits()).toHaveLength(0);
+    });
+
+    it('点击轨道 2 上一条/下一条导航到轨道 2 的相邻字幕', async () => {
+        store().currentTime = 17;
+
+        await shortcutButton('track2-prev').trigger('click');
+        expect(store().currentTime).toBe(12);
+        expect(store().isPlaying).toBe(true);
+
+        store().currentTime = 11;
+        await shortcutButton('track2-next').trigger('click');
+        expect(store().currentTime).toBe(12);
+        expect(store().isPlaying).toBe(true);
+    });
+
+    it('没有选择字幕文件时按钮禁用', async () => {
+        store().selectedFile = null;
+        await nextTick();
+
+        expect(shortcutButton('track1-next').attributes('disabled')).toBeDefined();
+        expect(shortcutButton('toggle-playback').attributes('disabled')).toBeDefined();
+        expect(shortcutButton('toggle-subtitles-left').attributes('disabled')).toBeDefined();
+    });
+});
+
+describe('Timeline 方向键与 W 键', () => {
+    it('↑ 导航到上一条字幕并播放', () => {
+        store().currentTime = 7;
+
+        const event = pressKey({ code: 'ArrowUp', key: 'ArrowUp' });
+
+        expect(store().currentTime).toBe(0);
+        expect(store().isPlaying).toBe(true);
+        expect(event.defaultPrevented).toBe(true);
+    });
+
+    it('W 导航到轨道 2 的上一条字幕并播放', () => {
+        store().currentTime = 17;
+
+        pressKey({ code: 'KeyW', key: 'w' });
+
+        expect(store().currentTime).toBe(12);
+        expect(store().isPlaying).toBe(true);
+    });
+
+    it('← 与 A 切换字幕隐藏状态，不改变进度与播放状态', () => {
+        store().currentTime = 7;
+
+        const left = pressKey({ code: 'ArrowLeft', key: 'ArrowLeft' });
+
+        expect(left.defaultPrevented).toBe(true);
+        expect(store().subtitlesHidden).toBe(true);
+        expect(store().currentTime).toBe(7);
+        expect(store().isPlaying).toBe(false);
+
+        pressKey({ code: 'KeyA', key: 'a' });
+
+        expect(store().subtitlesHidden).toBe(false);
+        expect(store().currentTime).toBe(7);
+        expect(store().isPlaying).toBe(false);
+    });
+
+    it('Ctrl+A 等组合键不触发快捷键', () => {
+        store().currentTime = 13;
+
+        pressKey({ code: 'KeyA', key: 'a', ctrlKey: true });
+
+        expect(store().subtitlesHidden).toBe(false);
+        expect(store().currentTime).toBe(13);
+        expect(store().isPlaying).toBe(false);
+        expect(playStateEmits()).toHaveLength(0);
     });
 });

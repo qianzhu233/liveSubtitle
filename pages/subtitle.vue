@@ -1,7 +1,11 @@
 <template>
     <div class="subtitle-view">
         <div class="subtitle-container">
-            <canvas ref="canvas" class="subtitle-canvas"></canvas>
+            <canvas
+                ref="canvas"
+                class="subtitle-canvas"
+                :class="{ 'subtitle-canvas-hidden': subtitlesHidden }"
+            ></canvas>
         </div>
     </div>
 </template>
@@ -16,6 +20,8 @@ const canvas = ref<HTMLCanvasElement>();
 const currentTime = ref(0);
 const isPlaying = ref(false);
 const selectedFile = ref<SubtitleFile | null>(null);
+// 控制端可临时隐藏所有字幕渲染层：只隐藏画布，渲染器与播放进度保持运行
+const subtitlesHidden = ref(false);
 
 // 字体为展示端的全局设置：切换歌曲、更新 ASS 内容时都统一应用
 // fontUrls 指向系统字体文件（同族可能有多个字重），由服务端 /api/font-file 提供
@@ -55,6 +61,8 @@ const readFontUrls = (data: any): string[] => {
  * 展示端本身不保存会话，重连后完全以服务端为准。
  */
 const applySnapshot = (data: any) => {
+    subtitlesHidden.value = data?.subtitlesHidden === true;
+
     const file = data?.selectedFile as SubtitleFile | undefined;
     if (!file) return;
 
@@ -150,6 +158,11 @@ const initSocketListeners = () => {
         reinitWithCurrentContent();
     });
 
+    handleSocketEvent('subtitle-visibility-change', (data: any) => {
+        console.log('收到字幕可见性变化:', data);
+        subtitlesHidden.value = data?.hidden === true;
+    });
+
     handleSocketEvent('file-selected', (data: any) => {
         console.log('收到文件选择:', data);
         // 切换字幕时先停掉旧字幕的计时器，避免旧时间线残留（之后由控制端的播放状态/时间同步驱动）
@@ -157,6 +170,8 @@ const initSocketListeners = () => {
         isPlaying.value = false;
         currentTime.value = 0;
         selectedFile.value = data.file;
+        // 新歌默认显示字幕
+        subtitlesHidden.value = data?.subtitlesHidden === true;
         // 字体设置随文件选择一起同步，保证切换歌曲后字体仍然全局生效
         if (typeof data.fontFamily === 'string') {
             fontFamily.value = data.fontFamily;
@@ -366,5 +381,10 @@ onUnmounted(() => {
     width: 1920px;
     height: 1080px;
     background-color: transparent;
+}
+
+/* 使用 visibility 而不是 v-if：隐藏期间渲染器继续工作，恢复时立即显示当前帧 */
+.subtitle-canvas-hidden {
+    visibility: hidden;
 }
 </style>

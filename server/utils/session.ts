@@ -17,6 +17,8 @@ export interface SessionState {
     isPlaying: boolean;
     /** 锚点时刻的播放进度（秒） */
     currentTime: number;
+    /** 临时隐藏所有字幕渲染层；切换字幕文件时恢复显示 */
+    subtitlesHidden: boolean;
     /** 锚点对应的服务端时间戳（ms） */
     anchorAt: number;
     /** 每次状态变更递增，便于排查事件乱序 */
@@ -64,6 +66,7 @@ export const createSessionState = (): SessionState => ({
     font: { ...EMPTY_FONT_PAYLOAD, fontUrls: [] },
     isPlaying: false,
     currentTime: 0,
+    subtitlesHidden: false,
     anchorAt: 0,
     revision: 0,
 });
@@ -93,6 +96,8 @@ export function applyFileSelected(
     state.font = readFontPayload(data);
     state.isPlaying = false;
     state.currentTime = 0;
+    // 新歌默认显示字幕，避免上一首的临时隐藏状态延续到下一首
+    state.subtitlesHidden = false;
     state.anchorAt = now;
     state.revision++;
     return true;
@@ -148,6 +153,25 @@ export function applyFontChange(state: SessionState, data: any): boolean {
     return true;
 }
 
+/**
+ * 临时隐藏/恢复所有字幕渲染层。
+ * 只影响展示端的可见性，不改变播放进度与播放状态；没有字幕文件时忽略。
+ */
+export function applyVisibilityChange(state: SessionState, data: any): boolean {
+    if (!state.selectedFile) {
+        return false;
+    }
+
+    const hidden = data?.hidden === true;
+    if (state.subtitlesHidden === hidden) {
+        return false;
+    }
+
+    state.subtitlesHidden = hidden;
+    state.revision++;
+    return true;
+}
+
 /** 供新连接/重连客户端使用的完整快照（不会修改状态） */
 export function createSnapshot(state: SessionState, now: number = Date.now()): SessionSnapshot {
     return {
@@ -155,6 +179,7 @@ export function createSnapshot(state: SessionState, now: number = Date.now()): S
         isPlaying: state.isPlaying,
         currentTime: projectCurrentTime(state, now),
         duration: durationOf(state),
+        subtitlesHidden: state.subtitlesHidden,
         serverTime: now,
         ...state.font,
         fontUrls: [...state.font.fontUrls],

@@ -83,6 +83,98 @@
             </div>
         </div>
 
+        <div class="shortcut-controls" aria-label="快捷键按钮">
+            <span class="shortcut-heading">快捷键</span>
+
+            <button
+                type="button"
+                class="shortcut-btn shortcut-btn-play"
+                data-shortcut="toggle-playback"
+                :disabled="!selectedFile"
+                :title="isPlaying ? '暂停（空格）' : '播放（空格）'"
+                @click="runShortcut(togglePlayback)"
+            >
+                <kbd class="shortcut-key">空格</kbd>
+                <span>{{ isPlaying ? '暂停' : '播放' }}</span>
+            </button>
+
+            <span class="shortcut-divider" aria-hidden="true"></span>
+            <span class="shortcut-group-label">轨道 1</span>
+
+            <button
+                type="button"
+                class="shortcut-btn"
+                :class="{ 'shortcut-btn-active': subtitlesHidden }"
+                data-shortcut="toggle-subtitles-left"
+                :disabled="!selectedFile"
+                :title="subtitlesHidden ? '恢复显示所有字幕（←）' : '暂时隐藏所有字幕渲染层（←）'"
+                @click="runShortcut(toggleSubtitlesHidden)"
+            >
+                <kbd class="shortcut-key">←</kbd>
+                <span>{{ subtitlesHidden ? '显示' : '隐藏' }}</span>
+            </button>
+            <button
+                type="button"
+                class="shortcut-btn"
+                data-shortcut="track1-prev"
+                :disabled="!selectedFile"
+                title="轨道 1：导航到上一条字幕并播放（↑）"
+                @click="runShortcut(() => playPreviousBlock(1))"
+            >
+                <kbd class="shortcut-key">↑</kbd>
+                <span>上一条</span>
+            </button>
+            <button
+                type="button"
+                class="shortcut-btn"
+                data-shortcut="track1-next"
+                :disabled="!selectedFile"
+                title="轨道 1：播放下一条字幕（↓）"
+                @click="runShortcut(() => playNextBlock(1))"
+            >
+                <kbd class="shortcut-key">↓</kbd>
+                <span>下一条</span>
+            </button>
+
+            <span class="shortcut-divider" aria-hidden="true"></span>
+            <span class="shortcut-group-label">轨道 2</span>
+
+            <button
+                type="button"
+                class="shortcut-btn"
+                :class="{ 'shortcut-btn-active': subtitlesHidden }"
+                data-shortcut="toggle-subtitles-a"
+                :disabled="!selectedFile"
+                :title="subtitlesHidden ? '恢复显示所有字幕（A）' : '暂时隐藏所有字幕渲染层（A）'"
+                @click="runShortcut(toggleSubtitlesHidden)"
+            >
+                <kbd class="shortcut-key">A</kbd>
+                <span>{{ subtitlesHidden ? '显示' : '隐藏' }}</span>
+            </button>
+            <button
+                type="button"
+                class="shortcut-btn"
+                data-shortcut="track2-prev"
+                :disabled="!selectedFile"
+                title="轨道 2：导航到上一条字幕并播放（W）"
+                @click="runShortcut(() => playPreviousBlock(2))"
+            >
+                <kbd class="shortcut-key">W</kbd>
+                <span>上一条</span>
+            </button>
+            <button
+                type="button"
+                class="shortcut-btn"
+                data-shortcut="track2-next"
+                :disabled="!selectedFile"
+                title="轨道 2：播放下一条字幕（S）"
+                @click="runShortcut(() => playNextBlock(2))"
+            >
+                <kbd class="shortcut-key">S</kbd>
+                <span>下一条</span>
+            </button>
+        </div>
+
         <div class="zoom-controls">
             <button @click="zoomOut" class="zoom-btn">-</button>
             <span class="zoom-level">{{ Math.round(zoomLevel * 100) }}%</span>
@@ -105,6 +197,7 @@ const playheadRef = ref<HTMLDivElement | null>(null);
 const selectedFile = computed(() => store.selectedFile);
 const currentTime = computed(() => store.currentTime);
 const isPlaying = computed(() => store.isPlaying);
+const subtitlesHidden = computed(() => store.subtitlesHidden);
 
 // 播放头直接写 DOM 位置，避免每个动画帧都触发整个时间轴（几百个字幕块）重新渲染
 const updatePlayheadPosition = (time: number) => {
@@ -164,12 +257,7 @@ const isBlockActive = (block: SubtitleBlock): boolean => {
 const seekToTime = (time: number) => {
     store.setCurrentTime(time);
     store.play();
-
-    if (playRafId !== null) {
-        playStartTime = performance.now();
-        playStartCurrentTime = time;
-        latestAutoTime = time;
-    }
+    realignPlaybackAnchor(time);
 };
 
 const zoomIn = () => {
@@ -188,19 +276,13 @@ const adjustTime = (adjustment: number) => {
         Math.min(selectedFile.value.duration, currentTime.value + adjustment),
     );
     store.setCurrentTime(newTime);
-
-    if (isPlaying.value && playRafId !== null) {
-        playStartTime = performance.now();
-        playStartCurrentTime = newTime;
-        latestAutoTime = newTime;
-    }
+    realignPlaybackAnchor(newTime);
 };
 
 let playRafId: number | null = null;
 let playSyncIntervalId: number | null = null;
 let playStartTime: number | null = null;
 let playStartCurrentTime: number | null = null;
-let latestAutoTime: number | null = null;
 
 // 播放头动画走 requestAnimationFrame，时间状态按低频写回 store：
 // 既保证指针顺滑，又避免每帧重渲染几百个字幕块、每帧都发 socket。
@@ -212,7 +294,6 @@ const getPlaybackTime = (): number | null => {
 };
 
 const finishPlayback = () => {
-    latestAutoTime = null;
     playStartTime = null;
     playStartCurrentTime = null;
     // 暂停并把进度归零一起广播，其它控制端/展示端才能同步回到起点
@@ -232,7 +313,6 @@ const animatePlayhead = () => {
         return;
     }
 
-    latestAutoTime = time;
     updatePlayheadPosition(time);
     playRafId = requestAnimationFrame(animatePlayhead);
 };
@@ -248,7 +328,6 @@ const syncPlaybackTime = () => {
         return;
     }
 
-    latestAutoTime = time;
     store.updatePlaybackTime(time);
 };
 
@@ -257,7 +336,6 @@ const startAutoPlay = () => {
 
     playStartTime = performance.now();
     playStartCurrentTime = currentTime.value;
-    latestAutoTime = currentTime.value;
     playRafId = requestAnimationFrame(animatePlayhead);
     playSyncIntervalId = window.setInterval(syncPlaybackTime, PLAYBACK_SYNC_INTERVAL_MS);
 };
@@ -275,7 +353,6 @@ const stopAutoPlay = () => {
     // 只清理本地播放锚点，不再回写/广播时间：
     // 远端暂停时这里若广播，会把本地锚点算出的旧时间发回服务端，形成回环。
     // 暂停所需的精确时间由 pause(time) 的调用方负责传入。
-    latestAutoTime = null;
     playStartTime = null;
     playStartCurrentTime = null;
 };
@@ -288,13 +365,115 @@ const startWatching = () => {
     }
 };
 
+// 播放中主动跳转后必须重新对齐本地播放锚点，否则下一帧会用旧锚点把时间拉回去
+const realignPlaybackAnchor = (time: number) => {
+    if (playRafId === null) return;
+    playStartTime = performance.now();
+    playStartCurrentTime = time;
+};
+
+/** 快捷键公共动作：跳转并保持播放 */
+const seekAndPlay = (time: number) => {
+    store.setCurrentTime(time);
+    store.play();
+    realignPlaybackAnchor(time);
+};
+
+const trackBlocks = (track: 1 | 2): SubtitleBlock[] =>
+    selectedFile.value?.blocks.filter((block: SubtitleBlock) => block.track === track) ?? [];
+
+const isTimeInBlock = (block: SubtitleBlock, time: number): boolean =>
+    time >= block.startTime && time <= block.endTime;
+
+/** 空格：播放 / 暂停切换；暂停时带上精确锚点时间，让其它控制端/展示端停在同一帧 */
+const togglePlayback = () => {
+    if (!selectedFile.value) return;
+
+    if (isPlaying.value) {
+        store.pause(getPlaybackTime() ?? store.currentTime);
+    } else {
+        store.play();
+    }
+};
+
+/** ← / A：临时隐藏/恢复所有字幕渲染层；不改变进度与播放状态 */
+const toggleSubtitlesHidden = () => {
+    store.toggleSubtitlesHidden();
+};
+
+/** ↓ / S：播放下一条；已经停在句首时重播当前句 */
+const playNextBlock = (track: 1 | 2) => {
+    const blocks = trackBlocks(track);
+    if (blocks.length === 0) return;
+
+    const time = store.currentTime;
+    const index = blocks.findIndex((block) => isTimeInBlock(block, time));
+
+    if (index === -1) {
+        const nextBlock = blocks.find((block) => block.startTime > time);
+        seekAndPlay(nextBlock ? nextBlock.startTime : blocks[0]!.startTime);
+        return;
+    }
+
+    const activeBlock = blocks[index]!;
+    if (time === activeBlock.startTime) {
+        store.play();
+        realignPlaybackAnchor(time);
+        return;
+    }
+    if (index < blocks.length - 1) {
+        seekAndPlay(blocks[index + 1]!.startTime);
+    }
+};
+
+/**
+ * 找出当前时间对应的「上一条」字幕：
+ * 当前时间在某条字幕内（含句首/句尾边界）时取它前面的一条；
+ * 已经过了某条字幕时取最近结束的那条；在第一条字幕之前时没有上一条。
+ */
+const findPreviousBlock = (blocks: SubtitleBlock[], time: number): SubtitleBlock | undefined => {
+    let currentIndex = -1;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+        if (blocks[i]!.startTime <= time) {
+            currentIndex = i;
+            break;
+        }
+    }
+
+    if (currentIndex === -1) return undefined;
+
+    const currentBlock = blocks[currentIndex]!;
+    if (time <= currentBlock.endTime) {
+        return currentIndex > 0 ? blocks[currentIndex - 1] : undefined;
+    }
+    return currentBlock;
+};
+
+/** ↑ / W：导航到上一条字幕并播放；没有上一条时不动作 */
+const playPreviousBlock = (track: 1 | 2) => {
+    const previousBlock = findPreviousBlock(trackBlocks(track), store.currentTime);
+    if (!previousBlock) return;
+    seekAndPlay(previousBlock.startTime);
+};
+
+/**
+ * 快捷键按钮：执行与键盘完全相同的动作，然后把焦点移出按钮。
+ * 否则按钮会一直保持焦点，下一次空格会再次点击按钮，而不是切换播放。
+ */
+const runShortcut = (action: () => void) => {
+    action();
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) {
+        activeElement.blur();
+    }
+};
+
 watch(selectedFile, (newFile) => {
     if (!newFile) return;
 
     // 先停掉上一首的播放循环，避免把旧时间写进新文件。
     // 文件、进度与播放状态已由 store 的本地选择/远端快照统一重置，这里只处理视图。
     stopAutoPlay();
-    latestAutoTime = null;
     zoomLevel.value = 1;
     nextTick(() => {
         updatePlayheadPosition(store.currentTime);
@@ -314,176 +493,41 @@ const handleKeyDown = (event: KeyboardEvent) => {
 
     if (isPlaybackToggleShortcut(event)) {
         event.preventDefault();
-
-        if (isPlaying.value) {
-            // 暂停时带上精确锚点时间，让其它控制端/展示端停在同一帧
-            store.pause(getPlaybackTime() ?? store.currentTime);
-        } else {
-            store.play();
-        }
+        togglePlayback();
         return;
     }
 
-    const currentTime = store.currentTime;
+    // Ctrl+S 保存、Ctrl+A 全选等组合键交还给浏览器
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+    }
 
-    if (
-        event.key === 'ArrowLeft' ||
-        event.key === 'ArrowRight' ||
-        event.key === 'ArrowUp' ||
-        event.key === 'ArrowDown'
-    ) {
+    if (event.key.startsWith('Arrow')) {
         event.preventDefault();
     }
 
-    if (event.key === 'ArrowLeft') {
-        const track1Blocks = selectedFile.value.blocks.filter((block) => block.track === 1);
-        const currentBlock = track1Blocks.find(
-            (block) => currentTime >= block.startTime && currentTime <= block.endTime,
-        );
-
-        if (currentBlock) {
-            store.setCurrentTime(currentBlock.startTime);
-            store.pause();
-        } else {
-            let targetBlock = null;
-            for (let i = track1Blocks.length - 1; i >= 0; i--) {
-                if (track1Blocks[i].endTime <= currentTime) {
-                    targetBlock = track1Blocks[i];
-                    break;
-                }
-            }
-
-            if (targetBlock) {
-                store.setCurrentTime(targetBlock.endTime);
-                store.pause();
-            } else if (track1Blocks.length > 0) {
-                store.setCurrentTime(track1Blocks[0].startTime);
-                store.pause();
-            }
-        }
-    } else if (event.key === 'ArrowDown') {
-        const track1Blocks = selectedFile.value.blocks.filter((block) => block.track === 1);
-
-        let currentBlockIndex = -1;
-        for (let i = 0; i < track1Blocks.length; i++) {
-            const block = track1Blocks[i];
-            if (currentTime >= block.startTime && currentTime <= block.endTime) {
-                currentBlockIndex = i;
-                break;
-            }
-        }
-
-        if (currentBlockIndex === -1) {
-            let nextBlockIndex = -1;
-            for (let i = 0; i < track1Blocks.length; i++) {
-                if (currentTime < track1Blocks[i].startTime) {
-                    nextBlockIndex = i;
-                    break;
-                }
-            }
-
-            if (nextBlockIndex !== -1) {
-                const nextBlock = track1Blocks[nextBlockIndex];
-                store.setCurrentTime(nextBlock.startTime);
-                store.play();
-                if (playRafId !== null) {
-                    playStartTime = performance.now();
-                    playStartCurrentTime = nextBlock.startTime;
-                }
-            } else if (track1Blocks.length > 0) {
-                store.setCurrentTime(track1Blocks[0].startTime);
-                store.play();
-                if (playRafId !== null) {
-                    playStartTime = performance.now();
-                    playStartCurrentTime = track1Blocks[0].startTime;
-                }
-            }
-        } else {
-            const currentBlock = track1Blocks[currentBlockIndex];
-            if (currentTime === currentBlock.startTime) {
-                store.play();
-                if (playRafId !== null) {
-                    playStartTime = performance.now();
-                    playStartCurrentTime = currentTime;
-                }
-            } else {
-                if (currentBlockIndex < track1Blocks.length - 1) {
-                    const nextBlock = track1Blocks[currentBlockIndex + 1];
-                    store.setCurrentTime(nextBlock.startTime);
-                    store.play();
-                    if (playRafId !== null) {
-                        playStartTime = performance.now();
-                        playStartCurrentTime = nextBlock.startTime;
-                    }
-                }
-            }
-        }
-    } else if (event.key === 'a' || event.key === 'A') {
-        const track2Blocks = selectedFile.value.blocks.filter((block) => block.track === 2);
-        const currentBlock = track2Blocks.find(
-            (block) => currentTime >= block.startTime && currentTime <= block.endTime,
-        );
-        if (currentBlock) {
-            store.setCurrentTime(currentBlock.startTime);
-            store.pause();
-        }
-    } else if (event.key === 's' || event.key === 'S') {
-        const track2Blocks = selectedFile.value.blocks.filter((block) => block.track === 2);
-
-        let currentBlockIndex = -1;
-        for (let i = 0; i < track2Blocks.length; i++) {
-            const block = track2Blocks[i];
-            if (currentTime >= block.startTime && currentTime <= block.endTime) {
-                currentBlockIndex = i;
-                break;
-            }
-        }
-
-        if (currentBlockIndex === -1) {
-            let nextBlockIndex = -1;
-            for (let i = 0; i < track2Blocks.length; i++) {
-                if (currentTime < track2Blocks[i].startTime) {
-                    nextBlockIndex = i;
-                    break;
-                }
-            }
-
-            if (nextBlockIndex !== -1) {
-                const nextBlock = track2Blocks[nextBlockIndex];
-                store.setCurrentTime(nextBlock.startTime);
-                store.play();
-                if (playRafId !== null) {
-                    playStartTime = performance.now();
-                    playStartCurrentTime = nextBlock.startTime;
-                }
-            } else if (track2Blocks.length > 0) {
-                store.setCurrentTime(track2Blocks[0].startTime);
-                store.play();
-                if (playRafId !== null) {
-                    playStartTime = performance.now();
-                    playStartCurrentTime = track2Blocks[0].startTime;
-                }
-            }
-        } else {
-            const currentBlock = track2Blocks[currentBlockIndex];
-            if (currentTime === currentBlock.startTime) {
-                store.play();
-                if (playRafId !== null) {
-                    playStartTime = performance.now();
-                    playStartCurrentTime = currentTime;
-                }
-            } else {
-                if (currentBlockIndex < track2Blocks.length - 1) {
-                    const nextBlock = track2Blocks[currentBlockIndex + 1];
-                    store.setCurrentTime(nextBlock.startTime);
-                    store.play();
-                    if (playRafId !== null) {
-                        playStartTime = performance.now();
-                        playStartCurrentTime = nextBlock.startTime;
-                    }
-                }
-            }
-        }
+    switch (event.key) {
+        case 'ArrowLeft':
+            toggleSubtitlesHidden();
+            break;
+        case 'ArrowUp':
+            playPreviousBlock(1);
+            break;
+        case 'ArrowDown':
+            playNextBlock(1);
+            break;
+        case 'a':
+        case 'A':
+            toggleSubtitlesHidden();
+            break;
+        case 'w':
+        case 'W':
+            playPreviousBlock(2);
+            break;
+        case 's':
+        case 'S':
+            playNextBlock(2);
+            break;
     }
 };
 
@@ -518,7 +562,6 @@ watch(
         if (!isPlaying.value) return;
         playStartTime = performance.now();
         playStartCurrentTime = currentTime.value;
-        latestAutoTime = currentTime.value;
     },
 );
 
@@ -561,7 +604,7 @@ watch(currentTime, (newTime) => {
     color: white;
     padding: 4px;
     border-radius: 8px;
-    height: 132px;
+    height: 164px;
     display: flex;
     flex-direction: column;
 }
@@ -713,6 +756,118 @@ watch(currentTime, (newTime) => {
     background-color: #ef4444;
     border-radius: 50%;
     transform: translateX(-50%);
+}
+
+.shortcut-controls {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    padding: 4px;
+    background-color: #111827;
+    border-radius: 4px;
+    flex-shrink: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #6b7280 #111827;
+}
+
+.shortcut-controls::-webkit-scrollbar {
+    height: 6px;
+}
+
+.shortcut-controls::-webkit-scrollbar-track {
+    background: #111827;
+}
+
+.shortcut-controls::-webkit-scrollbar-thumb {
+    background: #6b7280;
+    border-radius: 3px;
+}
+
+.shortcut-heading {
+    font-size: 10px;
+    color: #9ca3af;
+    white-space: nowrap;
+}
+
+.shortcut-group-label {
+    font-size: 9px;
+    color: #9ca3af;
+    white-space: nowrap;
+}
+
+.shortcut-divider {
+    width: 1px;
+    height: 14px;
+    background-color: #374151;
+    flex-shrink: 0;
+}
+
+.shortcut-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 6px;
+    border: 1px solid #4b5563;
+    border-radius: 3px;
+    background-color: #374151;
+    color: #e5e7eb;
+    font-size: 10px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+        background-color 0.2s ease,
+        border-color 0.2s ease;
+}
+
+.shortcut-btn:hover:not(:disabled) {
+    background-color: #4b5563;
+    border-color: #6b7280;
+}
+
+.shortcut-btn:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 1px;
+}
+
+.shortcut-btn:active:not(:disabled) {
+    background-color: #1f2937;
+}
+
+.shortcut-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.shortcut-btn-play {
+    border-color: #10b981;
+    color: #d1fae5;
+}
+
+/* 字幕被临时隐藏时，两个隐藏按钮显示「显示」并高亮，提示当前状态 */
+.shortcut-btn-active {
+    border-color: #fbbf24;
+    color: #fbbf24;
+}
+
+.shortcut-key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 13px;
+    padding: 0 4px;
+    border-radius: 2px;
+    background-color: #111827;
+    color: #fbbf24;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
 }
 
 .zoom-controls {

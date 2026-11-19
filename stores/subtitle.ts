@@ -38,6 +38,8 @@ export const useSubtitleStore = defineStore('subtitle', () => {
     const filterConfig = ref<FilterConfig>([]);
     // 远端（其它控制端/服务端快照）跳转时间时递增；Timeline 用它重新对齐播放锚点
     const seekVersion = ref(0);
+    // 临时隐藏所有字幕渲染层（展示端生效），不改变播放进度与播放状态
+    const subtitlesHidden = ref(false);
 
     // socket.io - auto-imported by @xarenas107/nuxt-socket-io
     const socket: any = useSocketIOStore();
@@ -89,6 +91,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         selectedFile.value = file;
         currentTime.value = 0;
         isPlaying.value = false;
+        subtitlesHidden.value = false;
         applyRemoteFontFamily(data?.fontFamily);
         return true;
     };
@@ -113,6 +116,10 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         applyRemoteFontFamily(data?.fontFamily);
     };
 
+    const applyRemoteVisibility = (data: any) => {
+        subtitlesHidden.value = data?.hidden === true;
+    };
+
     /** 连接/重连时由服务端下发：服务端是权威状态，本地直接对齐 */
     const applySnapshot = (snapshot: any): boolean => {
         const file = snapshot?.selectedFile as SubtitleFile | undefined;
@@ -125,6 +132,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         }
         currentTime.value = clampCurrentTime(Number(snapshot.currentTime));
         applyRemoteFontFamily(snapshot.fontFamily);
+        subtitlesHidden.value = snapshot?.subtitlesHidden === true;
         seekVersion.value++;
         isPlaying.value = snapshot.isPlaying === true;
         return true;
@@ -137,6 +145,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         selectedFile.value = file;
         currentTime.value = 0;
         isPlaying.value = false;
+        subtitlesHidden.value = false;
         socket.emit('file-selected', { file, ...selectedFontPayload.value });
     };
 
@@ -196,6 +205,20 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         socket.emit('font-change', selectedFontPayload.value);
     };
 
+    /**
+     * 临时隐藏/恢复所有字幕渲染层。只广播可见性，不影响播放进度与播放状态。
+     * 相同状态不重复广播；没有选择字幕文件时忽略。
+     */
+    const setSubtitlesHidden = (hidden: boolean) => {
+        if (!selectedFile.value || subtitlesHidden.value === hidden) return;
+        subtitlesHidden.value = hidden;
+        socket.emit('subtitle-visibility-change', { hidden });
+    };
+
+    const toggleSubtitlesHidden = () => {
+        setSubtitlesHidden(!subtitlesHidden.value);
+    };
+
     // 服务端没有权威状态时（通常是服务重启），用本地状态重新播种
     const seedServer = () => {
         if (!selectedFile.value) return;
@@ -207,6 +230,10 @@ export const useSubtitleStore = defineStore('subtitle', () => {
             isPlaying: isPlaying.value,
             currentTime: currentTime.value,
         });
+        // 服务端重启后恢复临时隐藏状态，避免展示端重新连上时字幕突然出现
+        if (subtitlesHidden.value) {
+            socket.emit('subtitle-visibility-change', { hidden: true });
+        }
     };
 
     // 连接后登记为控制端，服务端会立即下发权威快照
@@ -248,6 +275,11 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         applyRemoteFontChange(data);
     });
 
+    socket.on('subtitle-visibility-change', (data: any) => {
+        console.log('[socket.io] 其它控制端切换了字幕可见性');
+        applyRemoteVisibility(data);
+    });
+
     const loadSubtitleFiles = async () => {
         isLoading.value = true;
         try {
@@ -287,6 +319,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         filterConfig,
         isLoading,
         seekVersion,
+        subtitlesHidden,
         filteredFiles,
         filters,
         filterTypes,
@@ -301,5 +334,7 @@ export const useSubtitleStore = defineStore('subtitle', () => {
         loadSubtitleFiles,
         loadFontOptions,
         broadcastFontChange,
+        setSubtitlesHidden,
+        toggleSubtitlesHidden,
     };
 });

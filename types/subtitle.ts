@@ -44,6 +44,8 @@ export interface SessionSnapshot extends FontPayload {
     isPlaying: boolean;
     currentTime: number;
     duration: number;
+    // 临时隐藏所有字幕渲染层（展示端据此隐藏画布），切换字幕文件时恢复显示
+    subtitlesHidden: boolean;
     // 快照生成时的服务端时间戳（ms），客户端可据此估算网络延迟
     serverTime: number;
 }
